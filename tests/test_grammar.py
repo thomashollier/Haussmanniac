@@ -637,3 +637,73 @@ class TestModestProfile:
         spec = self.modest_grammar.get_roof_spec(3, StylePreset.MODEST)
         assert spec.mansard_type == MansardType.BROKEN
         assert spec.break_pct == 0.95
+
+
+# ---------------------------------------------------------------------------
+# Custom bay insertion
+# ---------------------------------------------------------------------------
+
+class TestCustomBays:
+    def test_custom_bays_inserted_when_edge_wide(self):
+        """Solver inserts CUSTOM bays when edge piers exceed threshold."""
+        # Use a wide facade with few bays to force large edge piers
+        # 20m facade / 3 bays @ 2.0m = 6.0m interior, edge = 7.0m (>> 75% of 2.0)
+        specs = grammar.solve_bay_layout(20.0, bay_count=3)
+        custom_bays = [s for s in specs if s.bay_type == BayType.CUSTOM]
+        assert len(custom_bays) >= 1, "Should insert custom bays for wide edge piers"
+
+    def test_no_custom_bays_when_edge_small(self):
+        """No custom bays when edge piers are within threshold."""
+        # 15m facade / 7 bays @ 2.0m = 14.0m, edge = 0.5m (< 75% of 2.0)
+        specs = grammar.solve_bay_layout(15.0, bay_count=7)
+        custom_bays = [s for s in specs if s.bay_type == BayType.CUSTOM]
+        assert len(custom_bays) == 0, "No custom bays needed for narrow edge piers"
+
+    def test_allow_custom_bays_false_suppresses(self):
+        """allow_custom_bays=False suppresses custom bay insertion."""
+        specs = grammar.solve_bay_layout(20.0, bay_count=3, allow_custom_bays=False)
+        custom_bays = [s for s in specs if s.bay_type == BayType.CUSTOM]
+        assert len(custom_bays) == 0, "Custom bays should be suppressed"
+
+    def test_custom_bays_at_edges(self):
+        """Custom bays should appear at the start and/or end of the layout."""
+        specs = grammar.solve_bay_layout(20.0, bay_count=3)
+        custom_bays = [s for s in specs if s.bay_type == BayType.CUSTOM]
+        if len(custom_bays) >= 2:
+            # First and last should be custom
+            assert specs[0].bay_type == BayType.CUSTOM
+            assert specs[-1].bay_type == BayType.CUSTOM
+        elif len(custom_bays) == 1:
+            # Should be at one edge
+            assert specs[0].bay_type == BayType.CUSTOM or specs[-1].bay_type == BayType.CUSTOM
+
+    def test_custom_bays_narrower_than_standard(self):
+        """Custom bays should be narrower than standard bays."""
+        specs = grammar.solve_bay_layout(20.0, bay_count=3)
+        custom_bays = [s for s in specs if s.bay_type == BayType.CUSTOM]
+        window_bays = [s for s in specs if s.bay_type == BayType.WINDOW]
+        if custom_bays and window_bays:
+            for cb in custom_bays:
+                assert cb.width < window_bays[0].width, (
+                    f"Custom bay width {cb.width} should be < standard {window_bays[0].width}"
+                )
+
+    def test_custom_bays_no_overlap(self):
+        """Custom bays must not overlap with standard bays."""
+        specs = grammar.solve_bay_layout(20.0, bay_count=3)
+        for i in range(len(specs) - 1):
+            right = specs[i].x_offset + specs[i].width
+            next_left = specs[i + 1].x_offset
+            assert right <= next_left + 0.001, (
+                f"Bay {i} right ({right}) overlaps bay {i+1} left ({next_left})"
+            )
+
+    def test_custom_bays_within_facade(self):
+        """All bays (including custom) must stay within facade width."""
+        for width in [15.0, 18.0, 20.0, 25.0]:
+            specs = grammar.solve_bay_layout(width, bay_count=3)
+            assert specs[0].x_offset >= 0, f"First bay starts before facade"
+            last = specs[-1]
+            assert last.x_offset + last.width <= width + 0.01, (
+                f"Last bay exceeds facade width ({last.x_offset + last.width:.3f} > {width})"
+            )

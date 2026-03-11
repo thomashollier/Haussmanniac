@@ -8,6 +8,7 @@ from core.types import (
     BayNode,
     BayType,
     CorniceNode,
+    CustomBayStyle,
     FacadeNode,
     FloorNode,
     FloorType,
@@ -190,3 +191,102 @@ class TestBayAlignment:
         # All floors should have the same bay x-offsets
         for offsets in bay_offsets_per_floor:
             assert offsets == bay_offsets_per_floor[0]
+
+
+# ---------------------------------------------------------------------------
+# Custom bay population
+# ---------------------------------------------------------------------------
+
+def _make_custom_bay_facade(custom_style: CustomBayStyle) -> FacadeNode:
+    """Build a facade with custom bays using a wide lot and few bays."""
+    from core.profile import get_profile
+    profile = get_profile("grand_boulevard")
+    g = HaussmannGrammar(profile=profile)
+    variation = Variation(seed=42, style=StylePreset.BOULEVARD)
+
+    # Wide facade with 3 bays → will trigger custom bay insertion
+    bay_layout = g.solve_bay_layout(20.0, bay_count=3)
+    custom_bays = [b for b in bay_layout if b.bay_type == BayType.CUSTOM]
+    # If solver didn't insert custom bays, force threshold to 0
+    if not custom_bays:
+        profile.bays.custom_bay_threshold = 0.0
+        bay_layout = g.solve_bay_layout(20.0, bay_count=3)
+
+    floors = build_floor_stack(
+        num_floors=7, facade_width=20.0, style=StylePreset.BOULEVARD,
+        variation=variation, grammar=g, has_entresol=True,
+    )
+    return build_facade(
+        orientation=Orientation.SOUTH, facade_width=20.0,
+        floor_nodes=floors, style=StylePreset.BOULEVARD,
+        variation=variation, grammar=g, bay_layout=bay_layout,
+        custom_bay_style=custom_style,
+    )
+
+
+class TestCustomBayPopulation:
+    def test_porthole_has_square_window(self):
+        """PORTHOLE custom bays have a window where width ≈ height."""
+        facade = _make_custom_bay_facade(CustomBayStyle.PORTHOLE)
+        for child in facade.children:
+            if isinstance(child, FloorNode):
+                for bay in child.children:
+                    if isinstance(bay, BayNode) and bay.custom_bay_style == CustomBayStyle.PORTHOLE:
+                        windows = [c for c in bay.children if isinstance(c, WindowNode)]
+                        assert len(windows) == 1
+                        win = windows[0]
+                        assert abs(win.width - win.height) < 0.01, (
+                            f"Porthole should be circular: w={win.width}, h={win.height}"
+                        )
+                        return
+        assert False, "No porthole custom bay found"
+
+    def test_narrow_window_has_window(self):
+        """NARROW_WINDOW custom bays have a rectangular window."""
+        facade = _make_custom_bay_facade(CustomBayStyle.NARROW_WINDOW)
+        for child in facade.children:
+            if isinstance(child, FloorNode):
+                for bay in child.children:
+                    if isinstance(bay, BayNode) and bay.custom_bay_style == CustomBayStyle.NARROW_WINDOW:
+                        windows = [c for c in bay.children if isinstance(c, WindowNode)]
+                        assert len(windows) == 1
+                        win = windows[0]
+                        assert win.height > win.width, "Narrow window should be tall"
+                        return
+        assert False, "No narrow window custom bay found"
+
+    def test_ornament_has_ornament_node(self):
+        """ORNAMENT custom bays have an OrnamentNode, no window."""
+        from core.types import OrnamentNode
+        facade = _make_custom_bay_facade(CustomBayStyle.ORNAMENT)
+        for child in facade.children:
+            if isinstance(child, FloorNode):
+                for bay in child.children:
+                    if isinstance(bay, BayNode) and bay.custom_bay_style == CustomBayStyle.ORNAMENT:
+                        windows = [c for c in bay.children if isinstance(c, WindowNode)]
+                        ornaments = [c for c in bay.children if isinstance(c, OrnamentNode)]
+                        assert len(windows) == 0, "Ornament bay should have no window"
+                        assert len(ornaments) == 1
+                        assert ornaments[0].ornament_id == "medallion"
+                        return
+        assert False, "No ornament custom bay found"
+
+    def test_custom_bays_no_balcony(self):
+        """Custom bays should never have balconies or balconettes."""
+        facade = _make_custom_bay_facade(CustomBayStyle.PORTHOLE)
+        for child in facade.children:
+            if isinstance(child, FloorNode):
+                for bay in child.children:
+                    if isinstance(bay, BayNode) and bay.bay_type == BayType.CUSTOM:
+                        balconies = [c for c in bay.children if isinstance(c, BalconyNode)]
+                        assert len(balconies) == 0, "Custom bay should not have balcony"
+
+    def test_custom_bays_no_pilasters(self):
+        """Custom bays should never have pilasters."""
+        facade = _make_custom_bay_facade(CustomBayStyle.PORTHOLE)
+        for child in facade.children:
+            if isinstance(child, FloorNode):
+                for bay in child.children:
+                    if isinstance(bay, BayNode) and bay.bay_type == BayType.CUSTOM:
+                        pilasters = [c for c in bay.children if isinstance(c, PilasterNode)]
+                        assert len(pilasters) == 0, "Custom bay should not have pilasters"

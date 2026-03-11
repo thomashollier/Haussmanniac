@@ -16,6 +16,7 @@ from .types import (
     BayNode,
     BayType,
     CorniceNode,
+    CustomBayStyle,
     FacadeNode,
     FloorNode,
     FloorType,
@@ -30,6 +31,7 @@ from .types import (
     PorteStyle,
     StringCourseNode,
     StylePreset,
+    SurroundStyle,
     Transform,
     WindowNode,
 )
@@ -49,6 +51,7 @@ def build_facade(
     door_bay_index: int = -1,
     ground_floor_type: GroundFloorType = GroundFloorType.COMMERCIAL,
     porte_style: PorteStyle = PorteStyle.ARCHED,
+    custom_bay_style: CustomBayStyle | None = None,
 ) -> FacadeNode:
     """Compose a complete facade from floor nodes and bay layout.
 
@@ -97,10 +100,12 @@ def build_facade(
                 has_porte_cochere, door_bay_index=door_bay_idx,
                 ground_floor_type=ground_floor_type,
                 porte_style=porte_style,
+                custom_bay_style=custom_bay_style,
             )
         elif isinstance(floor_node, FloorNode):
             _populate_upper_floor(
                 floor_node, bay_layout, facade_width, style, variation, grammar,
+                custom_bay_style=custom_bay_style,
             )
         facade.children.append(floor_node)
 
@@ -134,6 +139,7 @@ def _populate_upper_floor(
     style: StylePreset,
     variation: Variation,
     grammar: HaussmannGrammar,
+    custom_bay_style: CustomBayStyle | None = None,
 ) -> None:
     """Fill an upper-floor node with window bays, balconies, and ornament."""
     ft = node.floor_type
@@ -163,70 +169,78 @@ def _populate_upper_floor(
     std_bay_window_w = bp.bay_width[1] * (1 - bp.pier_ratio)
 
     for bay_spec in bay_layout:
+        is_custom = bay_spec.bay_type == BayType.CUSTOM
+
         bay = BayNode(
             transform=Transform(position=(bay_spec.x_offset, 0.0, 0.0)),
             width=bay_spec.width,
             x_offset=bay_spec.x_offset,
-            bay_type=BayType.WINDOW,
+            bay_type=BayType.CUSTOM if is_custom else BayType.WINDOW,
+            custom_bay_style=custom_bay_style if is_custom else None,
         )
 
-        # Window — use standard bay window width so door bays get normal windows
-        win_spec = grammar.get_window_spec(ft, ornament, std_bay_window_w, node.height)
-        surround = variation.vary_surround(ft, grammar)
-
-        pediment = PedimentStyle.NONE
-
-        # Noble floor with continuous balcony: windows touch the balcony floor
-        if ft == FloorType.NOBLE and has_balcony and grammar.profile.balconies.noble_sill_at_floor:
-            sill_height = 0.0
+        if is_custom and custom_bay_style is not None:
+            # Custom bay: porthole, narrow window, or ornament
+            _populate_custom_bay(bay, bay_spec, node, custom_bay_style, grammar)
         else:
-            sill_height = (node.height - win_spec.height) * grammar.profile.windows.sill_position_ratio
-        window = WindowNode(
-            transform=Transform(position=(0.0, sill_height, 0.0)),
-            width=win_spec.width,
-            height=win_spec.height,
-            surround_style=surround,
-            pediment=pediment,
-            has_keystone=win_spec.has_keystone,
-        )
-        bay.children.append(window)
+            # Standard window bay
+            # Window — use standard bay window width so door bays get normal windows
+            win_spec = grammar.get_window_spec(ft, ornament, std_bay_window_w, node.height)
+            surround = variation.vary_surround(ft, grammar)
 
-        # Individual balconette (not on continuous-balcony floors)
-        if has_balconette and not has_balcony:
-            balconette = BalconyNode(
+            pediment = PedimentStyle.NONE
+
+            # Noble floor with continuous balcony: windows touch the balcony floor
+            if ft == FloorType.NOBLE and has_balcony and grammar.profile.balconies.noble_sill_at_floor:
+                sill_height = 0.0
+            else:
+                sill_height = (node.height - win_spec.height) * grammar.profile.windows.sill_position_ratio
+            window = WindowNode(
                 transform=Transform(position=(0.0, sill_height, 0.0)),
-                width=bay_spec.width,
-                depth=grammar.profile.balconies.balconette_depth,
-                is_continuous=False,
-                railing_pattern=variation.vary_railing_pattern(ft),
-                railing_height=grammar.get_railing_height(),
+                width=win_spec.width,
+                height=win_spec.height,
+                surround_style=surround,
+                pediment=pediment,
+                has_keystone=win_spec.has_keystone,
             )
-            bay.children.append(balconette)
+            bay.children.append(window)
 
-        # Pilasters on rich floors
-        if ornament == OrnamentLevel.RICH and ft != FloorType.GROUND:
-            op = grammar.profile.ornament
-            for side in (-1, 1):
-                x_off = side * (bay_spec.width / 2 + op.pilaster_offset)
-                pilaster = PilasterNode(
-                    transform=Transform(position=(x_off, 0.0, 0.0)),
-                    width=op.pilaster_width,
-                    depth=op.pilaster_depth,
-                    height=node.height,
-                    has_capital=(ft == FloorType.NOBLE),
+            # Individual balconette (not on continuous-balcony floors)
+            if has_balconette and not has_balcony:
+                balconette = BalconyNode(
+                    transform=Transform(position=(0.0, sill_height, 0.0)),
+                    width=bay_spec.width,
+                    depth=grammar.profile.balconies.balconette_depth,
+                    is_continuous=False,
+                    railing_pattern=variation.vary_railing_pattern(ft),
+                    railing_height=grammar.get_railing_height(),
                 )
-                bay.children.append(pilaster)
+                bay.children.append(balconette)
 
-        # Pediment ornament piece (if pediment is present)
-        if pediment != PedimentStyle.NONE:
-            ornament_node = OrnamentNode(
-                transform=Transform(
-                    position=(0.0, sill_height + win_spec.height, 0.0),
-                ),
-                ornament_id=f"pediment_{pediment.name.lower()}",
-                ornament_level=ornament,
-            )
-            bay.children.append(ornament_node)
+            # Pilasters on rich floors
+            if ornament == OrnamentLevel.RICH and ft != FloorType.GROUND:
+                op = grammar.profile.ornament
+                for side in (-1, 1):
+                    x_off = side * (bay_spec.width / 2 + op.pilaster_offset)
+                    pilaster = PilasterNode(
+                        transform=Transform(position=(x_off, 0.0, 0.0)),
+                        width=op.pilaster_width,
+                        depth=op.pilaster_depth,
+                        height=node.height,
+                        has_capital=(ft == FloorType.NOBLE),
+                    )
+                    bay.children.append(pilaster)
+
+            # Pediment ornament piece (if pediment is present)
+            if pediment != PedimentStyle.NONE:
+                ornament_node = OrnamentNode(
+                    transform=Transform(
+                        position=(0.0, sill_height + win_spec.height, 0.0),
+                    ),
+                    ornament_id=f"pediment_{pediment.name.lower()}",
+                    ornament_level=ornament,
+                )
+                bay.children.append(ornament_node)
 
         node.children.append(bay)
 
@@ -236,3 +250,57 @@ def _populate_upper_floor(
         width=facade_width,
     )
     node.children.append(string_course)
+
+
+def _populate_custom_bay(
+    bay: BayNode,
+    bay_spec: BaySpec,
+    floor_node: FloorNode,
+    custom_style: CustomBayStyle,
+    grammar: HaussmannGrammar,
+) -> None:
+    """Populate a custom bay with porthole, narrow window, or ornament.
+
+    Custom bays are narrow bays at facade edges — no balcony, no
+    balconette, no pilasters.
+    """
+    floor_h = floor_node.height
+
+    if custom_style == CustomBayStyle.PORTHOLE:
+        # Circular window: diameter = 40% of floor height, centered
+        diameter = floor_h * 0.40
+        sill_height = (floor_h - diameter) / 2.0
+        window = WindowNode(
+            transform=Transform(position=(0.0, sill_height, 0.0)),
+            width=round(diameter, 3),
+            height=round(diameter, 3),
+            surround_style=SurroundStyle.MOLDED,
+            pediment=PedimentStyle.NONE,
+            has_keystone=False,
+        )
+        bay.children.append(window)
+
+    elif custom_style == CustomBayStyle.NARROW_WINDOW:
+        # Narrow rectangular window using the custom bay's own width
+        wp = grammar.profile.windows
+        win_w = bay_spec.width * wp.width_ratio
+        win_h = floor_h * wp.upper_height_ratio
+        sill_height = (floor_h - win_h) * wp.sill_position_ratio
+        window = WindowNode(
+            transform=Transform(position=(0.0, sill_height, 0.0)),
+            width=round(win_w, 3),
+            height=round(win_h, 3),
+            surround_style=SurroundStyle.MOLDED,
+            pediment=PedimentStyle.NONE,
+            has_keystone=False,
+        )
+        bay.children.append(window)
+
+    else:  # ORNAMENT
+        # Decorative medallion, centered in bay
+        ornament_node = OrnamentNode(
+            transform=Transform(position=(0.0, floor_h * 0.35, 0.0)),
+            ornament_id="medallion",
+            ornament_level=OrnamentLevel.MODERATE,
+        )
+        bay.children.append(ornament_node)

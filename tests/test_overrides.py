@@ -2,10 +2,15 @@
 
 from core.generator import generate_building
 from core.types import (
+    BayNode,
+    BayType,
     BuildingConfig,
     BuildingOverrides,
+    CustomBayStyle,
     DormerNode,
     DormerStyle,
+    FacadeNode,
+    FloorNode,
     GroundFloorType,
     PorteStyle,
     StylePreset,
@@ -127,3 +132,52 @@ class TestDeterminism:
         for a, b in zip(d1, d2):
             assert a.style == b.style
             assert a.transform.position == b.transform.position
+
+
+def _get_front_facade(building):
+    return [c for c in building.children if isinstance(c, FacadeNode)][0]
+
+
+def _get_custom_bays(building):
+    facade = _get_front_facade(building)
+    bays = []
+    for child in facade.children:
+        if isinstance(child, FloorNode):
+            for c in child.children:
+                if isinstance(c, BayNode) and c.bay_type == BayType.CUSTOM:
+                    bays.append(c)
+    return bays
+
+
+class TestCustomBayOverride:
+    def test_force_custom_bays_on(self):
+        """has_custom_bays=True forces custom bays even on a regular facade."""
+        ovr = BuildingOverrides(has_custom_bays=True)
+        building = _generate(seed=42, preset="RESIDENTIAL", overrides=ovr)
+        custom = _get_custom_bays(building)
+        assert len(custom) >= 1, "Override should force custom bays on"
+
+    def test_force_custom_bays_off(self):
+        """has_custom_bays=False suppresses custom bays."""
+        # Use a wide facade with few bays to trigger automatic custom bays
+        config = BuildingConfig(
+            seed=0,
+            style_preset="BOULEVARD",
+            lot_width=20.0,
+            overrides=BuildingOverrides(has_custom_bays=False, bay_count=3),
+        )
+        building = generate_building(config)
+        custom = _get_custom_bays(building)
+        assert len(custom) == 0, "Override should suppress custom bays"
+
+    def test_custom_bay_style_reaches_ir(self):
+        """custom_bay_style override reaches BayNode."""
+        ovr = BuildingOverrides(
+            has_custom_bays=True,
+            custom_bay_style=CustomBayStyle.PORTHOLE,
+        )
+        building = _generate(seed=42, preset="RESIDENTIAL", overrides=ovr)
+        custom = _get_custom_bays(building)
+        assert len(custom) >= 1
+        for bay in custom:
+            assert bay.custom_bay_style == CustomBayStyle.PORTHOLE

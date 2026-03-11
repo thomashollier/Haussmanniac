@@ -61,6 +61,10 @@ class BayProportions:
     threshold_5_bays: float = 8.0
     threshold_7_bays: float = 13.0
     threshold_9_bays: float = 18.0
+    # Custom bay parameters (narrow edge bays absorbing excess width)
+    custom_bay_width_ratio: float = 0.55    # custom bay as fraction of standard bay width
+    custom_pier_ratio: float = 0.20         # narrower piers on custom bays
+    custom_bay_threshold: float = 0.75      # edge > this × bay_width triggers auto custom bay
 
 
 @dataclass

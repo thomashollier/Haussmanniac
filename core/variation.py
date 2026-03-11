@@ -14,6 +14,7 @@ import random
 
 from .grammar import HaussmannGrammar
 from .types import (
+    CustomBayStyle,
     DormerStyle,
     FloorType,
     GroundFloorType,
@@ -232,6 +233,21 @@ class Variation:
         if base == DormerStyle.FLAT_SLOPE and roll < 0.3:
             return DormerStyle.ROUND_SLOPE
         return base
+
+    # -- Custom bay style ------------------------------------------------------
+
+    def vary_custom_bay_style(self) -> CustomBayStyle:
+        """Pick custom bay window treatment.
+
+        PORTHOLE 50%, NARROW_WINDOW 35%, ORNAMENT 15%.
+        """
+        roll = self.rng.random()
+        if roll < 0.50:
+            return CustomBayStyle.PORTHOLE
+        elif roll < 0.85:
+            return CustomBayStyle.NARROW_WINDOW
+        else:
+            return CustomBayStyle.ORNAMENT
 
     # -- Porte-cochère placement -----------------------------------------------
 

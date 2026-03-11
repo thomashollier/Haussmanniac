@@ -110,6 +110,13 @@ class DormerStyle(Enum):
     ROUND_SLOPE = auto()        # Short square dormer, circular window, zinc cap
 
 
+class CustomBayStyle(Enum):
+    """Window treatment for narrow custom bays at facade edges."""
+    PORTHOLE = auto()       # Circular window (oeil-de-boeuf)
+    NARROW_WINDOW = auto()  # Tall narrow rectangular window
+    ORNAMENT = auto()       # Decorative panel/medallion, no window
+
+
 class StylePreset(Enum):
     """Quick presets controlling ornament density and proportions."""
     BOULEVARD = auto()     # Rich — Bd Haussmann, Av de l'Opéra
@@ -240,6 +247,7 @@ class BayNode(IRNode):
     x_offset: float = 0.0
     bay_type: BayType = BayType.WINDOW
     porte_style: PorteStyle = PorteStyle.ARCHED  # Only relevant for DOOR bays
+    custom_bay_style: CustomBayStyle | None = None  # Set on CUSTOM-type bays
     store_type: StoreType | None = None      # Only set on commercial ground-floor bays
     is_store_entry: bool = False              # True for the bay that has the shop door
     children: list[IRNode] = field(default_factory=list)
@@ -372,6 +380,8 @@ class BuildingOverrides:
     upper_angle: float | None = None
     dormer_placement: str | None = None
     dormer_style: DormerStyle | None = None
+    has_custom_bays: bool | None = None              # Force custom bays on/off (None = auto)
+    custom_bay_style: CustomBayStyle | None = None    # Override the custom bay window style
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ from core.types import (
     BuildingNode,
     ChimneyNode,
     CorniceNode,
+    CustomBayStyle,
     DormerNode,
     FacadeNode,
     FloorNode,
@@ -368,6 +369,15 @@ def _draw_upper_floor(ctx: SVGContext, node: FloorNode, facade_w: float, labels:
 
 def _draw_ground_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: float):
     """Draw a single ground-floor bay (shopfront, door, or residential window)."""
+    # Custom ground bay: draw as narrow residential window
+    if bay.bay_type == BayType.CUSTOM:
+        for child in bay.children:
+            if isinstance(child, WindowNode):
+                win_x = bay.x_offset + (bay.width - child.width) / 2
+                win_y = floor_y + child.transform.position[1]
+                _draw_window(ctx, child, win_x, win_y, bay.width)
+        return
+
     for child in bay.children:
         if isinstance(child, WindowNode):
             win_x = bay.x_offset + (bay.width - child.width) / 2
@@ -488,6 +498,11 @@ def _draw_cafe_group(ctx: SVGContext, group: list[BayNode], floor_y: float, floo
 
 def _draw_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: float, floor_node: FloorNode):
     """Draw a single upper-floor bay with window, balconette, pilasters, pediment."""
+    # Custom bay rendering
+    if bay.custom_bay_style is not None:
+        _draw_custom_upper_bay(ctx, bay, floor_y, floor_h)
+        return
+
     win_surround_pad = 0.0
     for child in bay.children:
         if isinstance(child, WindowNode):
@@ -517,6 +532,66 @@ def _draw_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: floa
                 ped_y = floor_y + child.transform.position[1] + win_surround_pad
                 style = child.ornament_id.replace("pediment_", "")
                 _draw_pediment(ctx, ped_x, ped_y, bay.width, style)
+
+
+def _draw_custom_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: float):
+    """Draw a custom bay: porthole, narrow window, or ornament medallion."""
+    style = bay.custom_bay_style
+
+    if style == CustomBayStyle.PORTHOLE:
+        # Circular window centered in bay
+        for child in bay.children:
+            if isinstance(child, WindowNode):
+                diameter = child.width  # width == height for porthole
+                cx = bay.x_offset + bay.width / 2
+                cy = floor_y + child.transform.position[1] + diameter / 2
+
+                # Surround ring
+                pad = 0.04
+                steps = 24
+                surround_pts = []
+                for i in range(steps + 1):
+                    angle = 2 * math.pi * i / steps
+                    surround_pts.append((
+                        cx + (diameter / 2 + pad) * math.cos(angle),
+                        cy + (diameter / 2 + pad) * math.sin(angle),
+                    ))
+                ctx.polygon(surround_pts, COLORS["surround_molded"], stroke_w=0.6)
+
+                # Glass circle
+                glass_pts = []
+                for i in range(steps + 1):
+                    angle = 2 * math.pi * i / steps
+                    glass_pts.append((
+                        cx + (diameter / 2) * math.cos(angle),
+                        cy + (diameter / 2) * math.sin(angle),
+                    ))
+                ctx.polygon(glass_pts, COLORS["window"], stroke_w=0.5)
+
+                # Cross mullion
+                r = diameter / 2
+                ctx.line(cx - r, cy, cx + r, cy, COLORS["window_frame"], 0.4)
+                ctx.line(cx, cy - r, cx, cy + r, COLORS["window_frame"], 0.4)
+
+    elif style == CustomBayStyle.NARROW_WINDOW:
+        # Narrow rectangular window — reuse standard _draw_window
+        for child in bay.children:
+            if isinstance(child, WindowNode):
+                win_x = bay.x_offset + (bay.width - child.width) / 2
+                win_y = floor_y + child.transform.position[1]
+                _draw_window(ctx, child, win_x, win_y, bay.width)
+
+    elif style == CustomBayStyle.ORNAMENT:
+        # Decorative lozenge/medallion in stone color
+        cx = bay.x_offset + bay.width / 2
+        cy = floor_y + floor_h * 0.5
+        r = min(bay.width, floor_h) * 0.2
+        steps = 24
+        pts = []
+        for i in range(steps + 1):
+            angle = 2 * math.pi * i / steps
+            pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        ctx.polygon(pts, COLORS["ornament"], stroke_w=0.6)
 
 
 # ---------------------------------------------------------------------------

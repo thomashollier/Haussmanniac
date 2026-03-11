@@ -16,6 +16,7 @@ from .types import (
     BayNode,
     BayType,
     CorniceNode,
+    CustomBayStyle,
     FloorType,
     GroundFloorNode,
     GroundFloorType,
@@ -44,6 +45,7 @@ def build_ground_floor(
     door_bay_index: int = -1,
     ground_floor_type: GroundFloorType = GroundFloorType.COMMERCIAL,
     porte_style: PorteStyle = PorteStyle.ARCHED,
+    custom_bay_style: CustomBayStyle | None = None,
 ) -> None:
     """Populate a GroundFloorNode with bays appropriate to the ground floor type.
 
@@ -116,7 +118,12 @@ def build_ground_floor(
     for bay_spec in bay_layout:
         is_porte = bay_spec.index == porte_bay_idx
 
-        if is_porte:
+        if bay_spec.bay_type == BayType.CUSTOM:
+            bay = _build_custom_ground_bay(
+                bay_spec, ground_node.height, style, grammar,
+                custom_bay_style=custom_bay_style,
+            )
+        elif is_porte:
             bay = _build_porte_cochere_bay(
                 bay_spec, ground_node.height, gf_spec.porte_cochere_width,
                 style, grammar, porte_style=porte_style,
@@ -377,5 +384,46 @@ def _build_porte_cochere_bay(
             ornament_level=OrnamentLevel.RICH,
         )
         bay.children.append(keystone)
+
+    return bay
+
+
+def _build_custom_ground_bay(
+    bay_spec: BaySpec,
+    floor_height: float,
+    style: StylePreset,
+    grammar: HaussmannGrammar,
+    custom_bay_style: CustomBayStyle | None = None,
+) -> BayNode:
+    """Build a custom ground-floor bay — narrow residential window.
+
+    Custom bays are too narrow for a shopfront, so they get a simple
+    tall narrow window regardless of the custom_bay_style (which only
+    affects upper floors).
+    """
+    bay = BayNode(
+        transform=Transform(position=(bay_spec.x_offset, 0.0, 0.0)),
+        width=bay_spec.width,
+        x_offset=bay_spec.x_offset,
+        bay_type=BayType.CUSTOM,
+        custom_bay_style=custom_bay_style,
+    )
+
+    # Narrow window — same proportions as residential ground floor
+    wp = grammar.profile.windows
+    win_w = bay_spec.width * wp.width_ratio
+    win_w = max(0.3, min(win_w, bay_spec.width - 0.1))
+    sill_height = 1.0
+    win_h = max(1.0, floor_height * 0.70 - sill_height)
+
+    window = WindowNode(
+        transform=Transform(position=(0.0, sill_height, 0.0)),
+        width=round(win_w, 3),
+        height=round(win_h, 3),
+        surround_style=SurroundStyle.NONE,
+        pediment=PedimentStyle.NONE,
+        has_keystone=False,
+    )
+    bay.children.append(window)
 
     return bay

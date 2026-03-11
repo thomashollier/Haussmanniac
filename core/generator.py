@@ -22,6 +22,7 @@ from .types import (
     BuildingNode,
     BuildingOverrides,
     CornerNode,
+    CustomBayStyle,
     GroundFloorType,
     Orientation,
     PorteStyle,
@@ -119,6 +120,44 @@ def generate_building(
     if ovr.porte_style is not None:
         porte_style = ovr.porte_style
 
+    # -- Custom bay style (always consume RNG for stability) -------------------
+    custom_bay_style = variation.vary_custom_bay_style()
+    if ovr.custom_bay_style is not None:
+        custom_bay_style = ovr.custom_bay_style
+
+    # Apply has_custom_bays override
+    has_custom = any(b.bay_type == BayType.CUSTOM for b in front_bay_layout)
+    if ovr.has_custom_bays is not None:
+        if ovr.has_custom_bays and not has_custom:
+            # Force custom bays: re-solve with allow_custom_bays=True and
+            # a lowered threshold so they always appear
+            saved_threshold = grammar.profile.bays.custom_bay_threshold
+            grammar.profile.bays.custom_bay_threshold = 0.0
+            front_bay_layout = grammar.solve_bay_layout(
+                facade_width=lot_width,
+                bay_count=front_bay_count,
+                has_door=config.has_porte_cochere,
+                door_bay_index=door_bay_idx,
+                allow_custom_bays=True,
+            )
+            grammar.profile.bays.custom_bay_threshold = saved_threshold
+        elif not ovr.has_custom_bays and has_custom:
+            # Suppress custom bays: re-solve without them
+            front_bay_layout = grammar.solve_bay_layout(
+                facade_width=lot_width,
+                bay_count=front_bay_count,
+                has_door=config.has_porte_cochere,
+                door_bay_index=door_bay_idx,
+                allow_custom_bays=False,
+            )
+
+    # Update bay count and door index after potential re-solve
+    front_bay_count = len(front_bay_layout)
+    if config.has_porte_cochere:
+        door_bays = [b for b in front_bay_layout if b.bay_type == BayType.DOOR]
+        if door_bays:
+            door_bay_idx = door_bays[0].index
+
     # -- 3. Resolve ground floor type ------------------------------------------
     gf_type = GroundFloorType[config.ground_floor_type]
     if gf_type == GroundFloorType.AUTO:
@@ -140,6 +179,7 @@ def generate_building(
         door_bay_index=door_bay_idx,
         ground_floor_type=gf_type,
         porte_style=porte_style,
+        custom_bay_style=custom_bay_style,
     )
     building.children.append(front_facade)
 

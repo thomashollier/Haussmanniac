@@ -343,6 +343,7 @@ class HaussmannGrammar:
         has_door: bool = False,
         door_bay_index: int = -1,
         rng: random.Random | None = None,
+        allow_custom_bays: bool = True,
     ) -> list[BaySpec]:
         """Fit bays into *facade_width*.
 
@@ -445,9 +446,57 @@ class HaussmannGrammar:
                 interior = _interior(bay_count, door_bay_index)
                 edge = max(0.0, (facade_width - interior) / 2.0)
 
+        # -- Custom bay insertion (narrow bays at edges) --------------------------
+        # After widening, if edge piers are *still* disproportionately wide,
+        # insert a narrow CUSTOM bay at each edge to absorb the excess.
+        insert_custom_left = False
+        insert_custom_right = False
+        custom_bay_w = 0.0
+        custom_window_w = 0.0
+
+        if allow_custom_bays and bay_count >= 3:
+            threshold = bay_w * bp.custom_bay_threshold
+            if edge > threshold:
+                # Absorb most of the excess: 85% of edge, clamped to valid range
+                raw_custom = edge * 0.85
+                min_custom = bay_w * 0.35
+                max_custom = bay_w * bp.custom_bay_width_ratio
+                custom_bay_w = max(min_custom, min(raw_custom, max_custom))
+                custom_pier_w = custom_bay_w * bp.custom_pier_ratio
+                custom_window_w = custom_bay_w - custom_pier_w
+
+                # Try inserting on both sides first
+                new_edge = (facade_width - interior - 2 * custom_bay_w) / 2.0
+                if new_edge >= 0.1:
+                    insert_custom_left = True
+                    insert_custom_right = True
+                    edge = new_edge
+                else:
+                    # Only one custom bay (on the wider side)
+                    new_edge_one = (facade_width - interior - custom_bay_w) / 2.0
+                    if new_edge_one >= 0.1:
+                        insert_custom_left = True
+                        edge = new_edge_one
+
         # Build specs with cumulative x positioning
         specs: list[BaySpec] = []
-        x_cursor = edge  # left edge of first full bay (including half-pier)
+        idx = 0
+        x_cursor = edge  # left edge of first bay (including half-pier)
+
+        # Left custom bay
+        if insert_custom_left:
+            custom_half_pier = custom_bay_w * bp.custom_pier_ratio / 2.0
+            x = x_cursor + custom_half_pier
+            specs.append(BaySpec(
+                index=idx,
+                x_offset=round(x, 4),
+                width=round(custom_window_w, 4),
+                bay_type=BayType.CUSTOM,
+            ))
+            idx += 1
+            x_cursor += custom_bay_w
+
+        # Standard bays
         for i in range(bay_count):
             is_door = use_door and i == door_bay_index
             this_bay_w = door_bay_w if is_door else bay_w
@@ -455,12 +504,25 @@ class HaussmannGrammar:
 
             x = x_cursor + half_pier  # left edge of bay window
             specs.append(BaySpec(
-                index=i,
+                index=idx,
                 x_offset=round(x, 4),
                 width=round(this_window_w, 4),
                 bay_type=BayType.DOOR if is_door else BayType.WINDOW,
             ))
+            idx += 1
             x_cursor += this_bay_w
+
+        # Right custom bay
+        if insert_custom_right:
+            custom_half_pier = custom_bay_w * bp.custom_pier_ratio / 2.0
+            x = x_cursor + custom_half_pier
+            specs.append(BaySpec(
+                index=idx,
+                x_offset=round(x, 4),
+                width=round(custom_window_w, 4),
+                bay_type=BayType.CUSTOM,
+            ))
+
         return specs
 
     # -- Ornament rules --------------------------------------------------------
