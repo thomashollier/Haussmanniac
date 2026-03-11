@@ -162,6 +162,60 @@ class Variation:
             return RailingPattern.CLASSIC
         return base
 
+    # -- Mansard height --------------------------------------------------------
+
+    def vary_mansard(self, grammar: HaussmannGrammar) -> tuple[float, bool, float, float, float]:
+        """Pick mansard height, dormers, break ratio, and angles.
+
+        Returns ``(height, has_dormers, break_ratio, lower_angle_deg, upper_angle_deg)``.
+
+        For profiles with mansard_height_short > 0 (e.g. modest):
+        50% short roof, 50% tall roof — dormers always present.
+        Break ratio: 0.70–0.95 of roof height.
+        Lower angle: 70°–85° (steep segment).
+        Upper angle: 3°–45° (shallow segment).
+        Other styles: returns zeros (no override).
+        """
+        rp = grammar.profile.roof
+        if rp.mansard_height_short > 0:
+            break_ratio = round(self.rng.uniform(0.70, 0.95), 3)
+            lower_angle = round(self.rng.uniform(70.0, 85.0), 1)
+            upper_angle = round(self.rng.uniform(3.0, 45.0), 1)
+            if self.rng.random() < 0.5:
+                # Short roof — no dormers
+                h = self.rng.uniform(rp.mansard_height_short * 0.9,
+                                     rp.mansard_height_short * 1.1)
+                return (round(h, 3), False, break_ratio, lower_angle, upper_angle)
+            else:
+                # Tall roof — dormers
+                h = self.rng.uniform(rp.mansard_height * 0.9,
+                                     rp.mansard_height * 1.1)
+                return (round(h, 3), True, break_ratio, lower_angle, upper_angle)
+        return (rp.mansard_height, True, 0.0, 0.0, 0.0)
+
+    # -- Dormer placement ------------------------------------------------------
+
+    def vary_dormer_placement(self) -> str:
+        """Pick a dormer placement rule.
+
+        - ``EVERY_BAY``:    one dormer centered above each bay
+        - ``EVERY_OTHER``:  one dormer above every other bay
+        - ``BETWEEN_BAYS``: one dormer at each pier gap between adjacent bays
+        - ``CENTER_ONLY``:  one dormer above the center bay only
+
+        BETWEEN_BAYS is the default for modest buildings (50%);
+        the other three split the remaining 50%.
+        """
+        roll = self.rng.random()
+        if roll < 0.50:
+            return "BETWEEN_BAYS"
+        elif roll < 0.67:
+            return "EVERY_BAY"
+        elif roll < 0.84:
+            return "EVERY_OTHER"
+        else:
+            return "CENTER_ONLY"
+
     # -- Dormer style ----------------------------------------------------------
 
     def vary_dormer_style(self, grammar: HaussmannGrammar, bay_count: int) -> DormerStyle:
@@ -175,8 +229,8 @@ class Variation:
         roll = self.rng.random()
         if base == DormerStyle.PEDIMENT_TRIANGLE and roll < 0.2:
             return DormerStyle.PEDIMENT_CURVED
-        if base == DormerStyle.PEDIMENT_CURVED and roll < 0.15:
-            return DormerStyle.POINTY_ROOF
+        if base == DormerStyle.FLAT_SLOPE and roll < 0.3:
+            return DormerStyle.ROUND_SLOPE
         return base
 
     # -- Porte-cochère placement -----------------------------------------------

@@ -278,7 +278,7 @@ class MansardSlopeNode(IRNode):
     mansard_type: MansardType = MansardType.BROKEN
     lower_angle: float = math.radians(75)   # Steep lower slope (near-vertical)
     upper_angle: float = math.radians(20)   # Near-flat upper slope
-    break_height: float = 2.0               # Height where slope angle changes (BROKEN only)
+    break_pct: float = 0.95                 # Break as fraction of total height (1.0 = no upper segment)
     height: float = 2.8                     # Total mansard height
     material: str = "zinc"
 
@@ -350,6 +350,31 @@ class BuildingNode(IRNode):
 
 
 # ---------------------------------------------------------------------------
+# Building overrides (optional per-field overrides for seeded output)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BuildingOverrides:
+    """Optional overrides that replace individual RNG-driven decisions.
+
+    ``None`` means "use the random value."  The override is applied
+    immediately after the corresponding RNG call so the rest of the
+    building stays internally consistent.
+    """
+    bay_count: int | None = None
+    porte_cochere_bay: int | None = None
+    porte_style: PorteStyle | None = None
+    ground_floor_type: GroundFloorType | None = None
+    mansard_height: float | None = None
+    has_dormers: bool | None = None
+    break_ratio: float | None = None
+    lower_angle: float | None = None
+    upper_angle: float | None = None
+    dormer_placement: str | None = None
+    dormer_style: DormerStyle | None = None
+
+
+# ---------------------------------------------------------------------------
 # Building configuration (input to the generator)
 # ---------------------------------------------------------------------------
 
@@ -367,3 +392,4 @@ class BuildingConfig:
     ground_floor_type: str = "AUTO"     # Resolved to GroundFloorType enum
     profile_name: Optional[str] = None  # Override style_preset's default profile
     profile_variation: float = 0.0      # 0.0 = exact, 0.0-1.0 = variation amount
+    overrides: BuildingOverrides | None = None  # Per-field overrides for seeded output

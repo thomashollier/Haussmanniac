@@ -19,11 +19,13 @@ All geometry is described as IR nodes — no actual meshes are created here.
 from __future__ import annotations
 
 import math
+from dataclasses import replace as _dc_replace
 
 from .grammar import BaySpec, HaussmannGrammar
 from .types import (
     ChimneyNode,
     DormerNode,
+    DormerStyle,
     IRNode,
     MansardSlopeNode,
     MansardType,
@@ -44,18 +46,29 @@ def build_roof(
     bay_count: int | None = None,
     bay_layout: list[BaySpec] | None = None,
     door_bay_index: int = -1,
+    mansard_height: float | None = None,
+    has_dormers: bool = True,
+    break_ratio: float = 0.0,
+    lower_angle_deg: float = 0.0,
+    upper_angle_deg: float = 0.0,
+    dormer_placement: str = "",
+    dormer_style_override: DormerStyle | None = None,
 ) -> RoofNode:
     """Assemble the complete mansard roof from building parameters.
 
     The roof sits at *cornice_height* and contains:
     - Four mansard slope nodes (front, back, left, right)
-    - Dormer nodes on the front slope (unless SHALLOW)
+    - Dormer nodes on the front slope (unless SHALLOW or *has_dormers* is False)
     - Chimney stacks distributed along the ridge
 
     When *bay_count* is provided, it is used directly (skipping
     ``vary_bay_count``).  When *bay_layout* is provided, it is passed
     directly to ``_build_dormers`` so dormers align exactly with the
     facade bays (same count, same x-positions, same wide-door layout).
+
+    *mansard_height* overrides the roof spec height when provided (used
+    by the variation system for short/tall modest roofs).
+    *has_dormers* gates whether dormers are placed at all.
 
     Returns a fully-populated ``RoofNode``.
     """
@@ -66,6 +79,13 @@ def build_roof(
         bay_count = variation.vary_bay_count(lot_width, grammar)
     roof_spec = grammar.get_roof_spec(bay_count, style, is_front=True)
     rear_spec = grammar.get_roof_spec(bay_count, style, is_front=False)
+
+    # Override mansard parameters from variation (height, break ratio, angle)
+    if mansard_height is not None:
+        roof_spec = _replace_mansard_params(roof_spec, mansard_height,
+                                            break_ratio, lower_angle_deg, upper_angle_deg)
+        rear_spec = _replace_mansard_params(rear_spec, mansard_height,
+                                            break_ratio, lower_angle_deg, upper_angle_deg)
 
     roof = RoofNode(
         transform=Transform(position=(0.0, cornice_height, 0.0)),
@@ -79,10 +99,12 @@ def build_roof(
     roof.children.extend(slopes)
 
     # -- Dormers on front slope ------------------------------------------------
-    if roof_spec.dormer_every_n_bays > 0:
+    if has_dormers and roof_spec.dormer_every_n_bays > 0:
         dormers = _build_dormers(
             lot_width, style, variation, grammar, bay_count, roof_spec,
             bay_layout=bay_layout,
+            dormer_placement=dormer_placement,
+            dormer_style_override=dormer_style_override,
         )
         roof.children.extend(dormers)
 
@@ -96,11 +118,34 @@ def build_roof(
     # -- Ridge chimneys between bays -------------------------------------------
     if bay_layout and len(bay_layout) >= 2:
         ridge_chimneys = _build_ridge_chimneys(
-            bay_layout, variation, roof_spec,
+            bay_layout, variation, roof_spec, grammar=grammar,
+            door_bay_index=door_bay_index,
         )
         roof.children.extend(ridge_chimneys)
 
     return roof
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _replace_mansard_params(spec, height: float,
+                            break_ratio: float = 0.0,
+                            lower_angle_deg: float = 0.0,
+                            upper_angle_deg: float = 0.0):
+    """Return a copy of *spec* with mansard parameters replaced.
+
+    *break_ratio* (0.70–1.0) overrides break_pct.
+    *lower_angle_deg* (70–85) overrides the steep section angle.
+    *upper_angle_deg* (3–45) overrides the shallow section angle.
+    When any is zero, the spec default is kept.
+    """
+    pct = break_ratio if break_ratio > 0 else spec.break_pct
+    lower = lower_angle_deg if lower_angle_deg > 0 else spec.mansard_lower_angle_deg
+    upper = upper_angle_deg if upper_angle_deg > 0 else spec.mansard_upper_angle_deg
+    return _dc_replace(spec, mansard_height=height, break_pct=pct,
+                       mansard_lower_angle_deg=lower, mansard_upper_angle_deg=upper)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +169,7 @@ def _build_slopes(
             mansard_type=spec.mansard_type,
             lower_angle=math.radians(spec.mansard_lower_angle_deg),
             upper_angle=math.radians(spec.mansard_upper_angle_deg),
-            break_height=spec.break_height,
+            break_pct=spec.break_pct,
             height=spec.mansard_height,
             material="zinc",
         )
@@ -153,25 +198,31 @@ def _build_dormers(
     bay_count: int,
     roof_spec,
     bay_layout: list[BaySpec] | None = None,
+    dormer_placement: str = "",
+    dormer_style_override: DormerStyle | None = None,
 ) -> list[DormerNode]:
-    """Place dormers on the front mansard slope, aligned to the bay rhythm.
+    """Place dormers on the front mansard slope.
 
-    When *bay_layout* is provided, it is used directly so dormers align
-    exactly with the facade bays (same count, same x-positions, same
-    wide-door layout).  Otherwise falls back to computing a layout
-    from the grammar (legacy behaviour).
+    Four placement rules (selected by *dormer_placement*):
+
+    - ``EVERY_BAY``:    one dormer centered above each bay
+    - ``EVERY_OTHER``:  one dormer above every other bay
+    - ``BETWEEN_BAYS``: one dormer at each pier gap between adjacent bays
+    - ``CENTER_ONLY``:  one dormer above the center bay only
+
+    When *dormer_placement* is empty, falls back to the roof spec's
+    ``dormer_every_n_bays`` (legacy behaviour for non-modest styles).
 
     Dormers sit within the steep lower zone of the mansard:
     - STEEP:  Dormers can be tall, positioned at ~20% up the slope.
-    - BROKEN: Dormers fit below the break point (break_height).
+    - BROKEN: Dormers fit below the break point (break_pct * height).
     - SHALLOW: No dormers (caller should not invoke this).
-
-    Dormer x-positions are clamped so they don't extend beyond the
-    slope edges (which narrow as the slope rises).
     """
     if bay_layout is None:
         bay_layout = grammar.get_bay_layout(lot_width, style)
     dormer_style = variation.vary_dormer_style(grammar, bay_count)
+    if dormer_style_override is not None:
+        dormer_style = dormer_style_override
 
     mansard_type = roof_spec.mansard_type
     lower_angle_rad = math.radians(roof_spec.mansard_lower_angle_deg)
@@ -181,8 +232,9 @@ def _build_dormers(
         dormer_y = roof_spec.mansard_height * 0.15
         max_dormer_h = roof_spec.mansard_height * 0.6
     elif mansard_type == MansardType.BROKEN:
-        dormer_y = roof_spec.break_height * 0.10
-        max_dormer_h = roof_spec.break_height * 0.75
+        break_h = roof_spec.mansard_height * roof_spec.break_pct
+        dormer_y = break_h * 0.10
+        max_dormer_h = break_h * 0.75
     else:
         return []  # No dormers on shallow
 
@@ -197,25 +249,41 @@ def _build_dormers(
     std_bay_window_w = bp.bay_width[1] * (1 - bp.pier_ratio)
     win_w = std_bay_window_w * wp.width_ratio
 
+    # Compute dormer x-positions based on placement rule
+    x_positions: list[float] = []
+    if dormer_placement == "EVERY_BAY":
+        x_positions = [b.x_offset + b.width / 2 for b in bay_layout]
+    elif dormer_placement == "EVERY_OTHER":
+        x_positions = [b.x_offset + b.width / 2
+                       for i, b in enumerate(bay_layout) if i % 2 == 0]
+    elif dormer_placement == "BETWEEN_BAYS":
+        for i in range(len(bay_layout) - 1):
+            left = bay_layout[i]
+            right = bay_layout[i + 1]
+            x_positions.append((left.x_offset + left.width + right.x_offset) / 2)
+    elif dormer_placement == "CENTER_ONLY":
+        mid = len(bay_layout) // 2
+        x_positions = [bay_layout[mid].x_offset + bay_layout[mid].width / 2]
+    else:
+        # Legacy: use dormer_every_n_bays from roof spec
+        x_positions = [b.x_offset + b.width / 2
+                       for i, b in enumerate(bay_layout)
+                       if i % roof_spec.dormer_every_n_bays == 0]
+
+    left_edge = inset_at_dormer
+    right_edge = lot_width - inset_at_dormer
+
     dormers: list[DormerNode] = []
-    for i, bay_spec in enumerate(bay_layout):
-        if i % roof_spec.dormer_every_n_bays != 0:
-            continue
-
-        dormer_x = bay_spec.x_offset + bay_spec.width / 2
-        dormer_width = win_w
-
+    for dormer_x in x_positions:
         # Skip if dormer would be outside the slope surface
-        left_edge = inset_at_dormer
-        right_edge = lot_width - inset_at_dormer
-        if (dormer_x - dormer_width / 2) < left_edge - 0.05:
+        if (dormer_x - win_w / 2) < left_edge - 0.05:
             continue
-        if (dormer_x + dormer_width / 2) > right_edge + 0.05:
+        if (dormer_x + win_w / 2) > right_edge + 0.05:
             continue
 
         dormer = DormerNode(
             transform=Transform(position=(dormer_x, dormer_y, 0.0)),
-            width=round(dormer_width, 3),
+            width=round(win_w, 3),
             height=round(dormer_h, 3),
             style=dormer_style,
         )
@@ -247,31 +315,37 @@ def _build_chimneys(
     When the door is on a side bay, chimneys cluster on the opposite wall
     (typical of modest Parisian buildings).
     """
-    chimney_count = variation.vary_chimney_count(grammar, bay_count)
+    total_chimney_count = variation.vary_chimney_count(grammar, bay_count)
     base_height = roof_spec.chimney_height
 
     chimneys: list[ChimneyNode] = []
-    if chimney_count <= 0:
+    if total_chimney_count <= 0:
         return chimneys
 
-    # Split chimneys between left and right party walls.
+    # Split total between edge (party-wall) and ridge chimneys
+    ratio = grammar.profile.roof.ridge_to_edge_ratio
+    edge_count = max(1, round(total_chimney_count / (1 + ratio)))
+    # Ridge chimneys are handled by _build_ridge_chimneys; edge_count here
+
+    # Split edge chimneys between left and right party walls.
     # If door is on a side, put all chimneys on the opposite wall.
     if door_bay_index == 0:
         # Door on left → chimneys on right
         left_count = 0
-        right_count = chimney_count
+        right_count = edge_count
     elif door_bay_index >= 0 and door_bay_index == bay_count - 1:
         # Door on right → chimneys on left
-        left_count = chimney_count
+        left_count = edge_count
         right_count = 0
     else:
         # Center door or no door → split between both walls
-        right_count = chimney_count // 2
-        left_count = chimney_count - right_count
+        right_count = edge_count // 2
+        left_count = edge_count - right_count
 
-    # Chimney width (per stack) — wider stacks on party walls
-    stack_w = 0.8
-    stack_depth = 0.5
+    # Chimney dimensions — smaller for modest buildings
+    is_modest = (ratio > 1.0)  # modest has ridge_to_edge_ratio=2.0
+    stack_w = 0.6 if is_modest else 0.8
+    stack_depth = 0.4 if is_modest else 0.5
 
     # Chimneys start at the base of the mansard (y=0 relative to roof node)
     # and must clear the top.  Total height = mansard + clearance above.
@@ -313,6 +387,8 @@ def _build_ridge_chimneys(
     bay_layout: list[BaySpec],
     variation: Variation,
     roof_spec,
+    grammar: HaussmannGrammar | None = None,
+    door_bay_index: int = -1,
 ) -> list[ChimneyNode]:
     """Place ridge chimneys between bays, straddling the mansard top.
 
@@ -320,6 +396,10 @@ def _build_ridge_chimneys(
     (between adjacent bay windows).  Each has a thin flue pipe on top.
     Target density: ~3 chimneys per 7 bays, evenly distributed across
     the available pier gaps.
+
+    When *door_bay_index* indicates a side door (edge chimneys cluster
+    on the opposite wall), ridge chimneys prefer the door side to
+    balance the composition.
     """
     n_bays = len(bay_layout)
     if n_bays < 2:
@@ -328,26 +408,47 @@ def _build_ridge_chimneys(
     mansard_h = roof_spec.mansard_height
     chimneys: list[ChimneyNode] = []
 
-    # Target ~3 ridge chimneys per 7 bays, minimum 1
+    # Determine ridge chimney count from bay density (~3 per 7 bays)
+    ratio = grammar.profile.roof.ridge_to_edge_ratio if grammar else 1.0
+    is_modest = (ratio > 1.0)
     n_gaps = n_bays - 1
     target_count = max(1, round(n_bays * 3 / 7))
-    # Distribute evenly across pier gaps
-    step = n_gaps / target_count
+    target_count = min(target_count, n_gaps)  # can't exceed gap count
 
-    for k in range(target_count):
-        i = int(k * step + step / 2)  # centered within each segment
-        i = min(i, n_gaps - 1)
+    # Choose gap indices: prefer opposite side from edge chimneys
+    # (edge chimneys cluster opposite the door, so ridge goes near the door)
+    if target_count == 1 and n_gaps >= 2:
+        if door_bay_index == 0:
+            # Door on left → edge chimneys on right → ridge on left (gap 0)
+            gap_indices = [0]
+        elif door_bay_index >= 0 and door_bay_index >= n_bays - 1:
+            # Door on right → edge chimneys on left → ridge on right (last gap)
+            gap_indices = [n_gaps - 1]
+        else:
+            # Center door → distribute evenly
+            gap_indices = [n_gaps // 2]
+    else:
+        # Multiple ridge chimneys: distribute evenly
+        step = n_gaps / target_count
+        gap_indices = [min(int(k * step + step / 2), n_gaps - 1) for k in range(target_count)]
+
+    # Scale dimensions for modest buildings
+    base_stack_w = 0.45 if is_modest else 0.55
+    base_stack_depth = 0.35 if is_modest else 0.45
+    base_stack_h = 0.5 if is_modest else 0.6
+
+    for i in gap_indices:
         left_bay = bay_layout[i]
         right_bay = bay_layout[i + 1]
         pier_x = (left_bay.x_offset + left_bay.width + right_bay.x_offset) / 2
 
-        stack_w = 0.55 + variation.uniform(-0.03, 0.03)
-        stack_h = 0.6 + variation.uniform(-0.05, 0.10)
+        stack_w = base_stack_w + variation.uniform(-0.03, 0.03)
+        stack_h = base_stack_h + variation.uniform(-0.05, 0.10)
 
         chimneys.append(ChimneyNode(
             transform=Transform(position=(pier_x, mansard_h, 0.0)),
             width=round(stack_w, 3),
-            depth=0.45,
+            depth=base_stack_depth,
             height=round(stack_h, 3),
             material="stone",
             is_ridge=True,

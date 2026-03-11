@@ -20,6 +20,7 @@ from .types import (
     BayType,
     BuildingConfig,
     BuildingNode,
+    BuildingOverrides,
     CornerNode,
     GroundFloorType,
     Orientation,
@@ -65,6 +66,7 @@ def generate_building(
     has_entresol = config.has_entresol if config.has_entresol is not None else grammar.profile.has_entresol
 
     variation = Variation(seed=config.seed, style=style)
+    ovr = config.overrides or BuildingOverrides()
 
     building = BuildingNode(
         lot_width=lot_width,
@@ -87,11 +89,17 @@ def generate_building(
 
     # -- 2. Compute front facade bay layout once ---------------------------------
     front_bay_count = variation.vary_bay_count(lot_width, grammar)
+    if ovr.bay_count is not None:
+        front_bay_count = ovr.bay_count
 
     # Pick porte-cochère bay index before solver so it can size the door bay
     door_bay_idx = -1
     if config.has_porte_cochere and front_bay_count > 0:
         door_bay_idx = variation.pick_porte_cochere_bay(front_bay_count)
+        if ovr.porte_cochere_bay is not None:
+            door_bay_idx = ovr.porte_cochere_bay
+        # Clamp to actual bay count (pick_porte_cochere_bay may exceed range)
+        door_bay_idx = min(door_bay_idx, front_bay_count - 1)
 
     front_bay_layout = grammar.solve_bay_layout(
         facade_width=lot_width,
@@ -104,15 +112,19 @@ def generate_building(
     # Read actual door index from solver output (may have been clamped)
     if config.has_porte_cochere:
         door_bays = [b for b in front_bay_layout if b.bay_type == BayType.DOOR]
-        door_bay_idx = door_bays[0].index if door_bays else door_bay_idx
+        door_bay_idx = door_bays[0].index if door_bays else min(door_bay_idx, front_bay_count - 1)
 
     # Pick porte-cochère style (arched or flat)
     porte_style = variation.pick_porte_style() if config.has_porte_cochere else PorteStyle.ARCHED
+    if ovr.porte_style is not None:
+        porte_style = ovr.porte_style
 
     # -- 3. Resolve ground floor type ------------------------------------------
     gf_type = GroundFloorType[config.ground_floor_type]
     if gf_type == GroundFloorType.AUTO:
         gf_type = variation.vary_ground_floor_type(config.has_porte_cochere)
+    if ovr.ground_floor_type is not None:
+        gf_type = ovr.ground_floor_type
 
     # -- 4. Front facade -------------------------------------------------------
     front_facade = build_facade(
@@ -183,6 +195,27 @@ def generate_building(
 
     # -- 7. Roof ---------------------------------------------------------------
     cornice_height = total_height(floor_nodes)
+    mansard_h, roof_has_dormers, break_ratio, lower_angle, upper_angle = variation.vary_mansard(grammar)
+    if ovr.mansard_height is not None:
+        mansard_h = ovr.mansard_height
+    if ovr.break_ratio is not None:
+        break_ratio = ovr.break_ratio
+    if ovr.lower_angle is not None:
+        lower_angle = ovr.lower_angle
+    if ovr.upper_angle is not None:
+        upper_angle = ovr.upper_angle
+
+    # Dormer placement: use original RNG has_dormers for conditional flow
+    dormer_placement = variation.vary_dormer_placement() if roof_has_dormers else ""
+    if ovr.dormer_placement is not None:
+        dormer_placement = ovr.dormer_placement
+
+    # Apply has_dormers override AFTER conditional RNG calls
+    if ovr.has_dormers is not None:
+        roof_has_dormers = ovr.has_dormers
+        if roof_has_dormers and not dormer_placement:
+            dormer_placement = ovr.dormer_placement or "BETWEEN_BAYS"
+
     roof = build_roof(
         lot_width=lot_width,
         lot_depth=lot_depth,
@@ -193,6 +226,13 @@ def generate_building(
         bay_count=front_bay_count,
         bay_layout=front_bay_layout,
         door_bay_index=door_bay_idx,
+        mansard_height=mansard_h,
+        has_dormers=roof_has_dormers,
+        break_ratio=break_ratio,
+        lower_angle_deg=lower_angle,
+        upper_angle_deg=upper_angle,
+        dormer_placement=dormer_placement,
+        dormer_style_override=ovr.dormer_style,
     )
     building.children.append(roof)
 

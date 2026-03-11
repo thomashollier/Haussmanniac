@@ -343,24 +343,25 @@ class TestRoofRules:
         assert spec.mansard_type == MansardType.BROKEN
         assert spec.mansard_lower_angle_deg >= 65.0
         assert spec.mansard_upper_angle_deg <= 25.0
-        assert spec.break_height > 0.0
+        assert spec.break_pct > 0.0
 
-    def test_modest_steep_mansard_with_small_dormers(self):
+    def test_modest_broken_mansard_with_small_dormers(self):
         from core.types import MansardType
         spec = grammar.get_roof_spec(3, StylePreset.MODEST)
-        assert spec.mansard_type == MansardType.STEEP
-        assert spec.dormer_every_n_bays == 2  # every other bay
-        assert spec.dormer_style == DormerStyle.PEDIMENT_CURVED
+        assert spec.mansard_type == MansardType.BROKEN
+        assert spec.break_pct == 0.95  # 95% of total height
+        assert spec.dormer_every_n_bays == 1  # placement handled by dormer_placement param
+        assert spec.dormer_style == DormerStyle.FLAT_SLOPE
 
     def test_boulevard_dormers_every_bay(self):
         spec = grammar.get_roof_spec(7, StylePreset.BOULEVARD)
         assert spec.dormer_every_n_bays == 1
         assert spec.dormer_style == DormerStyle.PEDIMENT_CURVED
 
-    def test_modest_dormers_every_other_bay(self):
-        """Modest gets small round dormers every other bay."""
+    def test_modest_dormers_flat_slope(self):
+        """Modest gets flat-slope dormers (placement handled by variation)."""
         spec = grammar.get_roof_spec(3, StylePreset.MODEST)
-        assert spec.dormer_every_n_bays == 2
+        assert spec.dormer_style == DormerStyle.FLAT_SLOPE
 
     def test_chimney_count_minimum(self):
         spec = grammar.get_roof_spec(3)
@@ -532,13 +533,15 @@ class TestLayoutStrategies:
                     f"Width {width}: bay {i} right ({right_edge}) overlaps bay {i+1} left ({next_left})"
                 )
 
-    def test_narrow_facade_reduces_bays(self):
-        """Very narrow facade should reduce bay count to fit."""
+    def test_narrow_facade_minimum_three_bays(self):
+        """Very narrow facade should still produce 3 bays (minimum), narrowing as needed."""
         specs = grammar.solve_bay_layout(4.0)
-        assert len(specs) <= 3
+        assert len(specs) == 3
         # Should still not overflow
         last = specs[-1]
-        assert last.x_offset + last.width <= 4.0 + 0.01
+        bp = grammar.profile.bays
+        half_pier = specs[0].width * (bp.pier_ratio / (1 - bp.pier_ratio)) / 2
+        assert last.x_offset + last.width + half_pier <= 4.0 + 0.01
 
     def test_strategy_ignored_backward_compat(self):
         """get_bay_layout ignores strategy param — all bays uniform."""
@@ -557,3 +560,80 @@ class TestLayoutStrategies:
         specs = grammar.solve_bay_layout(20.0, bay_count=3)
         edge_left = specs[0].x_offset
         assert edge_left > 2.0, f"Edge pier {edge_left} too narrow for 20m/3-bay"
+
+
+# ---------------------------------------------------------------------------
+# Modest profile — minimum 3 bays, noble height cap, edge pier widening
+# ---------------------------------------------------------------------------
+
+class TestModestProfile:
+    def setup_method(self):
+        from core.profile import get_profile
+        self.modest_grammar = HaussmannGrammar(get_profile("modest"))
+
+    def test_minimum_three_bays_on_narrow_lot(self):
+        """Even very narrow lots must produce at least 3 bays."""
+        for width in [5.0, 5.5, 6.0, 6.5, 7.0]:
+            specs = self.modest_grammar.solve_bay_layout(width)
+            assert len(specs) >= 3, f"Width {width}m: got {len(specs)} bays, expected ≥3"
+
+    def test_narrow_lot_bays_dont_overflow(self):
+        """Narrowed bays must fit within the facade width."""
+        for width in [5.0, 5.5, 6.0, 6.5]:
+            specs = self.modest_grammar.solve_bay_layout(width)
+            bp = self.modest_grammar.profile.bays
+            # Last bay right edge + half pier should not exceed facade
+            last = specs[-1]
+            bay_w_actual = last.width / (1 - bp.pier_ratio)  # full bay from window zone
+            half_pier = bay_w_actual * bp.pier_ratio / 2
+            assert last.x_offset + last.width + half_pier <= width + 0.01, (
+                f"Width {width}m: bays overflow ({last.x_offset + last.width + half_pier:.3f}m)"
+            )
+
+    def test_noble_window_height_capped(self):
+        """Noble window must not exceed noble_max_height_ratio of floor height."""
+        wp = self.modest_grammar.profile.windows
+        floor_h = self.modest_grammar.get_floor_height(FloorType.NOBLE)
+        max_h = floor_h * wp.noble_max_height_ratio
+        spec = self.modest_grammar.get_window_spec(
+            FloorType.NOBLE, OrnamentLevel.RICH, 1.3, floor_h,
+        )
+        assert spec.height <= max_h + 0.001, (
+            f"Noble window {spec.height}m exceeds cap {max_h}m "
+            f"({spec.height / floor_h:.0%} of floor)"
+        )
+
+    def test_noble_cap_with_varied_profile(self):
+        """Noble height cap must hold even after profile variation."""
+        from core.profile import get_profile, vary_profile
+        for seed in range(50):
+            profile = vary_profile(get_profile("modest"), seed, amount=0.5)
+            g = HaussmannGrammar(profile)
+            wp = profile.windows
+            floor_h = g.get_floor_height(FloorType.NOBLE)
+            max_h = floor_h * wp.noble_max_height_ratio
+            bay_w = profile.bays.bay_width[1] * (1 - profile.bays.pier_ratio)
+            spec = g.get_window_spec(FloorType.NOBLE, OrnamentLevel.RICH, bay_w, floor_h)
+            assert spec.height <= max_h + 0.001, (
+                f"Seed {seed}: noble window {spec.height:.3f}m > cap {max_h:.3f}m"
+            )
+
+    def test_edge_piers_not_excessively_wide(self):
+        """On moderate-width lots, bays should widen to prevent huge edge piers."""
+        # 9.6m lot with 3 bays at 2.0m = 6.0m → edge was 1.8m (90% of bay)
+        # After widening, edge piers should be reduced
+        specs = self.modest_grammar.solve_bay_layout(9.6, bay_count=3)
+        bp = self.modest_grammar.profile.bays
+        bay_w_actual = specs[0].width / (1 - bp.pier_ratio)
+        edge = specs[0].x_offset - bay_w_actual * bp.pier_ratio / 2
+        # Edge should be at most 75% of bay width after widening
+        assert edge <= bay_w_actual * 0.76, (
+            f"Edge pier {edge:.3f}m is still > 75% of bay {bay_w_actual:.3f}m"
+        )
+
+    def test_modest_roof_broken_mansard(self):
+        """Modest buildings should use BROKEN mansard (not STEEP)."""
+        from core.types import MansardType
+        spec = self.modest_grammar.get_roof_spec(3, StylePreset.MODEST)
+        assert spec.mansard_type == MansardType.BROKEN
+        assert spec.break_pct == 0.95

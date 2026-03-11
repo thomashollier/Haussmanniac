@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A procedural system for generating 3D buildings in the Parisian Haussmann style. The architecture uses a **backend-agnostic pure Python core** that outputs an intermediate representation (IR), consumed by **Blender** and **USD** backend adapters to produce actual geometry.
+A procedural system for generating buildings in the Parisian Haussmann style. A **backend-agnostic pure Python core** outputs an intermediate representation (IR) tree of typed dataclasses, consumed by backend adapters (SVG currently implemented; Blender and USD planned).
 
 ---
 
@@ -11,25 +11,24 @@ A procedural system for generating 3D buildings in the Parisian Haussmann style.
 ```
 ┌─────────────────────────────────────────────────┐
 │                  CORE (pure Python)              │
-│  grammar → generator → intermediate repr (IR)   │
+│  profile → grammar → generator → IR tree        │
 └──────────────────┬──────────────────────────────┘
                    │  IR = tree of typed dataclasses
-          ┌────────┴────────┐
-          ▼                 ▼
-  ┌──────────────┐  ┌──────────────┐
-  │   Blender    │  │     USD      │
-  │   Adapter    │  │   Adapter    │
-  │  bpy/bmesh   │  │  pxr.Usd*   │
-  └──────────────┘  └──────────────┘
+          ┌────────┼────────┐
+          ▼        ▼        ▼
+  ┌────────┐  ┌────────┐  ┌────────┐
+  │  SVG   │  │Blender │  │  USD   │
+  │Backend │  │Backend │  │Backend │
+  └────────┘  └────────┘  └────────┘
 ```
 
-### Three Layers
+### Layers
 
-1. **Generative Core** (`core/`) — Pure Python, zero external dependencies. Contains all Haussmann rules, proportions, and assembly logic. Outputs a tree of parameterized nodes (the IR). No geometry lives here — only descriptions like "place a noble-floor window bay at (x,y,z) with width=1.2m, pediment='triangular'."
+1. **Generative Core** (`core/`) — Pure Python, zero external dependencies. Contains Haussmann rules, proportions, profiles, and assembly logic. Outputs a tree of parameterized IR nodes.
 
-2. **Backend Adapters** (`backends/`) — Consume the IR tree and emit real geometry. Blender adapter uses `bpy`/`bmesh`. USD adapter uses `pxr.UsdGeom`/`pxr.UsdShade`. Each adapter walks the same IR tree but produces output native to its target.
+2. **Backend Adapters** (`backends/`) — Consume the IR tree and produce output. `svg.py` renders 2D facade elevations. Blender/USD backends planned.
 
-3. **Asset Library** (`assets/`) — Pre-modeled ornamental pieces and 2D profile curves for extrusion. Referenced by ID in the IR; resolved to geometry by each backend.
+3. **Profile System** (`core/profile.py`) — All architectural proportions live in `FacadeProfile` dataclasses. Three presets: `GRAND_BOULEVARD`, `RESIDENTIAL`, `MODEST`. `vary_profile()` shifts proportions coherently by seed.
 
 ---
 
@@ -38,232 +37,248 @@ A procedural system for generating 3D buildings in the Parisian Haussmann style.
 ```
 haussmann/
 ├── CLAUDE.md              # This file — project context for Claude
+├── pyproject.toml
 ├── core/
 │   ├── __init__.py
-│   ├── types.py           # Dataclasses for intermediate representation
-│   ├── grammar.py         # Haussmann architectural rules & proportions
-│   ├── generator.py       # Top-level building generation pipeline
-│   ├── facade.py          # Facade composition (bay layout, symmetry)
+│   ├── types.py           # IR dataclasses, enums, BuildingConfig, BuildingOverrides
+│   ├── profile.py         # FacadeProfile dataclass, presets, vary_profile()
+│   ├── grammar.py         # HaussmannGrammar — proportional rules from profile
+│   ├── generator.py       # Top-level pipeline: config → IR tree
+│   ├── facade.py          # Facade composition (bay layout, windows, ornament)
 │   ├── floor.py           # Floor stacking logic
-│   ├── roof.py            # Mansard roof generation
-│   ├── ground_floor.py    # Shopfronts, porte-cochère, rustication
-│   └── variation.py       # Controlled randomization & style params
+│   ├── roof.py            # Mansard roof, dormers, chimneys
+│   ├── ground_floor.py    # Shopfronts, porte-cochere, rustication
+│   └── variation.py       # Seeded RNG (Variation class)
 ├── backends/
 │   ├── __init__.py
-│   ├── base.py            # Abstract base adapter interface
-│   ├── blender/
-│   │   ├── __init__.py
-│   │   ├── adapter.py     # IR → Blender geometry
-│   │   ├── materials.py   # Shader node setup
-│   │   ├── profiles.py    # Curve-based molding extrusion
-│   │   └── operators.py   # Optional Blender UI panel/operators
-│   └── usd/
-│       ├── __init__.py
-│       ├── adapter.py     # IR → USD prims
-│       ├── materials.py   # UsdShade material setup
-│       └── instancing.py  # Point instancer for repeated elements
-├── assets/
-│   ├── profiles/          # 2D SVG/curves for cornice moldings etc.
-│   └── meshes/            # Pre-modeled ornamental .usd/.blend files
+│   └── svg.py             # SVG 2D facade renderer
 ├── tests/
+│   ├── __init__.py
 │   ├── test_types.py
 │   ├── test_grammar.py
 │   ├── test_generator.py
-│   └── test_facade.py
-├── examples/
-│   ├── single_building.py # Generate one building, dump IR
-│   ├── street_block.py    # Generate a row of buildings
-│   └── export_usd.py      # Full pipeline to .usda output
-└── pyproject.toml
+│   ├── test_facade.py
+│   ├── test_ground_floor.py
+│   ├── test_roof.py
+│   └── test_overrides.py
+├── docs/
+│   └── bay_layout_rules.md
+├── examples/output/       # Reference SVGs and PNGs
+└── output/                # Working output directory
 ```
 
 ---
 
 ## Haussmann Architectural Rules
 
-These are the core constraints the system must encode. All values are typical ranges — the variation system picks within these bounds.
-
 ### Vertical Zoning (floor types, bottom to top)
 
 | Floor             | Typical Height | Character                                    |
 |-------------------|---------------|----------------------------------------------|
-| Ground (RDC)      | 4.0–5.0 m     | Commercial. Tall openings, rusticated stone.  |
-| Entresol          | 2.5–3.0 m     | Low intermediate. Small windows, sometimes omitted. |
-| Étage Noble (2nd) | 3.2–3.8 m     | Tallest windows, richest ornament, continuous balcony. |
-| 3rd Floor         | 3.0–3.5 m     | Slightly less ornate than noble floor.        |
-| 4th Floor         | 2.8–3.2 m     | Simpler window surrounds.                     |
-| 5th Floor         | 2.8–3.0 m     | Continuous balcony (second balcony line). Simpler ornament. |
-| 6th (Mansard)     | 2.5–3.0 m     | Zinc-clad 45° roof slope. Dormers.            |
+| Ground (RDC)      | 3.15–3.80 m   | Commercial or residential. Rusticated stone.  |
+| Entresol          | 1.70–2.30 m   | Low intermediate (omitted on MODEST).         |
+| Etage Noble (2nd) | 2.88–3.40 m   | Tallest windows, richest ornament, continuous balcony. |
+| 3rd Floor         | 2.83–2.95 m   | Slightly less ornate than noble floor.        |
+| 4th Floor         | 2.60–2.75 m   | Simpler window surrounds.                     |
+| 5th Floor         | 2.50 m        | Individual balconettes (GRAND only).          |
+| Mansard           | 1.30–2.20 m   | Zinc-clad broken mansard. Dormers.            |
 
 ### Horizontal Rules
 
-- **Bay width**: 1.0–1.8 m (window) with 0.4–0.8 m piers between
-- **Bay count**: Typically 3–7 bays per facade, must be odd for symmetry
-- **Alignment**: All openings align vertically across floors
-- **Corner treatment**: 45° chamfer (pan coupé) at street intersections, ~3 m wide
+- **Bay** = half-pier + window zone + half-pier (centerline-to-centerline)
+- **Interior piers**: 29% of bay width (`pier_ratio`)
+- **Window width**: 65% of window zone (`width_ratio`)
+- **Edge piers**: absorb leftover width; widen bays when edge > 75% of bay width
+- **Door bay**: 1.5x wider (GRAND_BOULEVARD + RESIDENTIAL)
+- **Minimum 3 bays** enforced (solver narrows bays rather than dropping below 3)
 
 ### Balcony Rules
 
-- **Floor 2 (noble)**: Continuous wrought-iron balcony spanning full facade
-- **Floor 5**: Second continuous balcony
-- **Other floors**: Individual balconettes per window, or none
-- **Railing height**: ~1.0 m, decorative cast-iron patterns
-
-### Ornament Hierarchy (decreasing with height)
-
-- **Ground**: Rustication (bossage), large keystones, heavy cornice above
-- **Noble floor**: Pilasters or engaged columns flanking windows, triangular/segmental pediments, elaborate window surrounds
-- **Middle floors**: Simpler molded surrounds, cornices between floors
-- **Upper floors**: Plain surrounds or just a lintel
-- **Roof cornice**: Heavy projecting cornice with modillions/dentils at roofline
+- **Noble**: continuous balcony, windows touch balcony (sill=0)
+- **3rd/4th**: no balconies
+- **5th**: individual balconettes (GRAND only)
 
 ### Roof
 
-- **Mansard angle**: ~45° lower slope, ~20° upper slope (often hidden)
-- **Material**: Zinc cladding (grey)
-- **Dormers**: One per bay or every other bay, stone or zinc surrounds
-- **Chimneys**: Tall terracotta/stone chimney stacks, grouped
+- **Mansard type**: BROKEN (most common), STEEP (grand), SHALLOW (rear)
+- **Dormers**: 6 styles (PEDIMENT_TRIANGLE, PEDIMENT_CURVED, POINTY_ROOF, OVAL, FLAT_SLOPE, ROUND_SLOPE)
+- **Dormer placement**: EVERY_BAY, EVERY_OTHER, BETWEEN_BAYS, CENTER_ONLY
+- **Chimneys**: edge (party-wall stacks) + ridge (between bays at mansard top)
+- **Modest roofs**: 50/50 short (no dormers) / tall (with dormers)
 
 ---
 
-## Intermediate Representation (IR) Specification
+## Profile System
 
-The IR is a tree of Python dataclasses. Every node has a `transform` (local position/rotation/scale relative to parent) and a `node_type` string.
+All proportions live in `FacadeProfile` (defined in `core/profile.py`). Three built-in presets:
 
-### Node Types
+| Property | GRAND_BOULEVARD | RESIDENTIAL | MODEST |
+|---|---|---|---|
+| Typical floors | 7 (has entresol) | 6 (has entresol) | 5 (no entresol) |
+| Lot width (min/typ/max) | 13.75/16.0/19.0 | 10.0/12.0/14.5 | 7.0/7.45/10.0 |
+| Bay width | 2.0 m | 2.0 m | 2.0 m |
+| Pier ratio | 0.29 | 0.29 | 0.315 |
+| Window width ratio | 0.65 | 0.65 | 0.55 |
+| Noble bordered aspect | 2.5:1 | 2.5:1 | 1.575:1 |
+| Mansard type | STEEP | BROKEN | BROKEN |
+| Dormer style | PEDIMENT_CURVED | PEDIMENT_TRIANGLE | PEDIMENT_CURVED |
+
+- `BuildingConfig.profile_name` overrides the style preset's default profile
+- `BuildingConfig.profile_variation` (0.0–1.0) feeds `vary_profile()` for building DNA
+- `Variation` class handles per-element noise (surrounds, chimneys, etc.)
+
+---
+
+## Override System
+
+`BuildingOverrides` (in `core/types.py`) allows overriding individual RNG-driven decisions while keeping everything else deterministic for the seed.
+
+### Available Overrides
+
+| Field | Type | Controls |
+|---|---|---|
+| `bay_count` | `int` | Front facade bay count |
+| `porte_cochere_bay` | `int` | Which bay index gets the door |
+| `porte_style` | `PorteStyle` | ARCHED or FLAT |
+| `ground_floor_type` | `GroundFloorType` | COMMERCIAL, RESIDENTIAL, or MIXED |
+| `mansard_height` | `float` | Roof height in metres |
+| `has_dormers` | `bool` | Force dormers on/off |
+| `break_ratio` | `float` | Where the mansard slope breaks (0.70–0.95) |
+| `lower_angle` | `float` | Steep section angle in degrees |
+| `upper_angle` | `float` | Shallow section angle in degrees |
+| `dormer_placement` | `str` | EVERY_BAY, EVERY_OTHER, BETWEEN_BAYS, CENTER_ONLY |
+| `dormer_style` | `DormerStyle` | One of 6 dormer shapes |
+
+### Design Principles
+
+- All fields are `None` by default — `None` means "use the RNG value"
+- Overrides are applied **after** each RNG call, so the RNG sequence is consumed identically regardless of overrides
+- Downstream code uses the overridden value, keeping the building internally consistent
+- `has_dormers` uses a special pattern: the conditional `vary_dormer_placement()` call is gated on the **RNG** decision (not the override) to preserve RNG sequence stability
+
+### Usage
 
 ```python
-BuildingNode          # Root. Contains metadata + child facades/roof.
-├── FacadeNode        # One per building face. Has orientation, width.
-│   ├── FloorNode     # One per storey on this facade.
-│   │   ├── BayNode   # One per vertical bay on this floor.
+from core.types import BuildingConfig, BuildingOverrides, DormerStyle, PorteStyle
+
+config = BuildingConfig(
+    seed=0,
+    style_preset="MODEST",
+    overrides=BuildingOverrides(
+        has_dormers=True,
+        porte_style=PorteStyle.FLAT,
+        dormer_style=DormerStyle.OVAL,
+    ),
+)
+building = generate_building(config)
+```
+
+---
+
+## Intermediate Representation (IR)
+
+The IR is a tree of Python dataclasses. Every node has a `transform` (position/rotation/scale) and a `node_type` string.
+
+```python
+BuildingNode          # Root
+├── FacadeNode        # One per building face (S, E, W, N)
+│   ├── FloorNode     # One per storey
+│   │   ├── BayNode   # One per vertical bay
 │   │   │   ├── WindowNode
 │   │   │   ├── BalconyNode
 │   │   │   ├── PilasterNode
-│   │   │   └── OrnamentNode  # Keystone, pediment, cornice segment
-│   │   ├── CorniceNode       # Horizontal band between floors
+│   │   │   └── OrnamentNode
+│   │   ├── CorniceNode
 │   │   └── StringCourseNode
-│   └── GroundFloorNode        # Special: shopfronts, porte-cochère
+│   └── GroundFloorNode
 ├── RoofNode
 │   ├── MansardSlopeNode
 │   ├── DormerNode
 │   └── ChimneyNode
-└── CornerNode                 # Pan coupé chamfer treatment
+└── CornerNode         # Pan coupe (optional)
 ```
-
-### Key Dataclass Fields
-
-- `BuildingNode`: lot_width, lot_depth, num_floors, style_params, seed
-- `FacadeNode`: orientation (N/S/E/W), width, depth_offset
-- `FloorNode`: floor_type (enum), height, y_offset, ornament_level (0–3)
-- `BayNode`: width, x_offset, bay_type (window/door/blank)
-- `WindowNode`: width, height, surround_style, pediment (none/triangular/segmental/arched), has_keystone
-- `BalconyNode`: style, is_continuous, railing_pattern_id
-- `RoofNode`: mansard_lower_angle, mansard_upper_angle, dormer_specs, chimney_positions
 
 ---
 
-## Implementation Plan (ordered tasks)
+## Implementation Status
 
-Work through these sequentially. Each is a self-contained session.
+### Phase 1: Foundation -- DONE
+- [x] `core/types.py` — IR dataclasses, enums, Transform, BuildingConfig, BuildingOverrides
+- [x] `core/grammar.py` — HaussmannGrammar with bay solver, floor specs, roof specs
+- [x] `core/profile.py` — FacadeProfile dataclass, 3 presets, vary_profile()
+- [x] `tests/test_grammar.py` — Grammar validation tests
 
-### Phase 1: Foundation
-- [ ] **Task 1**: `core/types.py` — Define all IR dataclasses with full type hints and defaults. Include a `Transform` dataclass (position, rotation, scale). Include enums for floor types, ornament levels, pediment styles, bay types.
-- [ ] **Task 2**: `core/grammar.py` — Encode all Haussmann proportional rules as a `HaussmannGrammar` class. Methods like `get_floor_heights(num_floors) -> list[FloorSpec]`, `get_bay_layout(facade_width) -> list[BaySpec]`, `get_ornament_level(floor_type) -> int`. All magic numbers here, well-documented.
-- [ ] **Task 3**: `tests/test_grammar.py` — Validate grammar outputs against real measurements from documented Haussmann buildings.
+### Phase 2: Generation Pipeline -- DONE
+- [x] `core/floor.py` — Floor stacking with exact grammar heights
+- [x] `core/facade.py` — Bay population, balconies, pilasters, surrounds
+- [x] `core/generator.py` — Full pipeline: config -> profile -> grammar -> IR tree
+- [x] `core/variation.py` — Seeded RNG, vary_mansard, vary_dormer_*, vary_bay_count
 
-### Phase 2: Generation Pipeline
-- [ ] **Task 4**: `core/floor.py` — Floor stacking: given building height + grammar, produce a list of `FloorNode` with correct heights and y-offsets.
-- [ ] **Task 5**: `core/facade.py` — Bay distribution: given facade width + grammar, produce `BayNode` list with symmetry enforcement (odd count, optional center emphasis).
-- [ ] **Task 6**: `core/generator.py` — Top-level pipeline: accept a `BuildingConfig`, run floor stacking → facade composition → ornament assignment → roof. Return complete `BuildingNode` tree.
-- [ ] **Task 7**: `core/variation.py` — Seeded randomization system. Given a seed + style parameters, produce controlled variation in ornament density, pediment styles, color, dormer count.
+### Phase 3: Roof & Ground Floor -- DONE
+- [x] `core/roof.py` — Mansard slopes, dormers (6 styles, 4 placements), edge + ridge chimneys
+- [x] `core/ground_floor.py` — Store types (BOUTIQUE/CAFE), porte-cochere, shopfronts
 
-### Phase 3: Roof & Ground Floor
-- [ ] **Task 8**: `core/roof.py` — Mansard roof generation: compute slope geometry from footprint, place dormers per bay rhythm, position chimneys.
-- [ ] **Task 9**: `core/ground_floor.py` — Ground floor logic: shopfront opening placement, porte-cochère detection (one per building, usually center or side), rustication parameters.
+### Phase 4: SVG Backend -- DONE
+- [x] `backends/svg.py` — 2D facade elevation renderer
 
-### Phase 4: Blender Backend
-- [ ] **Task 10**: `backends/base.py` — Abstract `BackendAdapter` with `build(building_node) -> None` and per-node visitor methods.
-- [ ] **Task 11**: `backends/blender/adapter.py` — Walk the IR tree, create Blender mesh objects. Start with box geometry per bay (no detail), get transforms right.
-- [ ] **Task 12**: `backends/blender/adapter.py` — Add window boolean cutouts or inset geometry.
-- [ ] **Task 13**: `backends/blender/profiles.py` — Cornice and molding generation via curve extrusion along facade edges.
-- [ ] **Task 14**: `backends/blender/materials.py` — Principled BSDF setup: limestone for walls (warm cream), zinc for roof, cast iron for balconies, glass for windows.
-- [ ] **Task 15**: `backends/blender/operators.py` — Simple Blender panel: seed, lot width, lot depth, style preset. Button to generate.
+### Phase 5: Override System -- DONE
+- [x] `BuildingOverrides` dataclass with 11 override fields
+- [x] Override application in generator (after RNG, before downstream)
+- [x] `dormer_style_override` threaded through roof.py
+- [x] `tests/test_overrides.py` — 6 tests covering on/off, style, identity, determinism
 
-### Phase 5: USD Backend
-- [ ] **Task 16**: `backends/usd/adapter.py` — Walk IR, emit `UsdGeom.Mesh` and `UsdGeom.Xform` hierarchy. Write `.usda` files.
-- [ ] **Task 17**: `backends/usd/instancing.py` — Use `UsdGeom.PointInstancer` for repeated elements (windows, balcony rails, dormers) across a street.
-- [ ] **Task 18**: `backends/usd/materials.py` — `UsdShade` material bindings with `UsdPreviewSurface`.
-
-### Phase 6: Polish & Scale
-- [ ] **Task 19**: LOD system — Generate 3 detail levels (far: extruded footprint, mid: windowed box, close: full ornament).
-- [ ] **Task 20**: Street-level composition — Place multiple buildings along a polyline with shared party walls, varying widths, consistent cornice heights.
+### Future
+- [ ] Blender backend (`backends/blender/`)
+- [ ] USD backend (`backends/usd/`)
+- [ ] LOD system
+- [ ] Street-level composition (multiple buildings along a polyline)
 
 ---
 
 ## Coding Conventions
 
-- **Python 3.10+** — Use `dataclasses`, `enum.Enum`, type hints everywhere.
-- **No geometry in core** — The `core/` package must have zero imports from `bpy`, `pxr`, `numpy`, or any non-stdlib package. It only uses stdlib (`dataclasses`, `enum`, `math`, `random`, `typing`).
-- **Deterministic with seed** — All randomization uses `random.Random(seed)` instances, never the global `random`. Same seed + same config = identical IR tree.
-- **Units** — All dimensions in meters. Origin at building front-left-ground corner. Y is up.
-- **Naming** — snake_case for everything. IR node classes end in `Node`. Backend methods named `_build_<node_type>`.
-- **Testing** — Every core module gets a corresponding test file. Test IR structure, not geometry.
+- **Python 3.10+** — `dataclasses`, `enum.Enum`, type hints everywhere
+- **No geometry in core** — `core/` has zero non-stdlib imports
+- **Deterministic with seed** — All RNG via `random.Random(seed)`, never global
+- **Units** — Metres. Origin at front-left-ground corner. Y is up.
+- **Naming** — snake_case everywhere. IR node classes end in `Node`.
+- **Testing** — Every core module has a corresponding test file. Test IR structure, not geometry.
 
 ---
 
 ## Style Presets
 
-Define a few presets to make generation easy:
-
-- **`BOULEVARD`** — Rich ornamentation, 7 bays, noble floor with full pilasters, triangular pediments. (Bd Haussmann, Av de l'Opéra)
-- **`RESIDENTIAL`** — Moderate ornament, 5 bays, simpler surrounds. (Typical side street)
-- **`MODEST`** — Minimal ornament, 3 bays, no entresol. (Back streets, upper arrondissements)
+- **`BOULEVARD`** — Rich ornamentation, 7 floors, entresol, noble floor with pilasters. (Bd Haussmann, Av de l'Opera)
+- **`RESIDENTIAL`** — Moderate ornament, 6 floors, entresol, simpler surrounds. (Typical side street)
+- **`MODEST`** — Minimal ornament, 5 floors, no entresol, wider piers, squatter windows. (Back streets, upper arrondissements)
 
 ---
 
-## Example Usage (target API)
+## Quick Start
 
 ```python
-from haussmann.core.generator import generate_building
-from haussmann.core.types import BuildingConfig
+from core.generator import generate_building
+from core.types import BuildingConfig
 
+# Generate with defaults (RESIDENTIAL, seed 42)
+building = generate_building(BuildingConfig())
+
+# Modest building, seed 0, with overrides
+from core.types import BuildingOverrides, PorteStyle
 config = BuildingConfig(
-    lot_width=15.0,
-    lot_depth=12.0,
-    num_floors=6,
-    style_preset="BOULEVARD",
-    seed=42,
+    seed=0,
+    style_preset="MODEST",
+    overrides=BuildingOverrides(has_dormers=True, porte_style=PorteStyle.FLAT),
 )
-
-# Pure IR — no geometry, no dependencies
 building = generate_building(config)
 
-# Blender backend
-from haussmann.backends.blender.adapter import BlenderAdapter
-adapter = BlenderAdapter()
-adapter.build(building)
-
-# USD backend
-from haussmann.backends.usd.adapter import UsdAdapter
-adapter = UsdAdapter(output_path="building.usda")
-adapter.build(building)
+# Render to SVG
+from backends.svg import render_svg
+svg = render_svg(building)
 ```
 
----
-
-## Getting Started
-
-To begin implementation, start with Task 1:
+### Running Tests
 
 ```bash
-claude "Read CLAUDE.md, then implement Task 1: create core/types.py with all IR dataclasses, Transform, and enums. Follow the coding conventions strictly."
+python -m pytest tests/ -x
 ```
-
-Then proceed sequentially:
-
-```bash
-claude "Read CLAUDE.md, then implement Task 2: create core/grammar.py with the HaussmannGrammar class encoding all proportional rules from the architectural spec."
-```
-
-Each task is scoped to roughly one file and one session.

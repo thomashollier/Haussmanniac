@@ -1019,7 +1019,7 @@ def _draw_roof(ctx: SVGContext, roof: RoofNode, facade_w: float, cornice_h: floa
     mansard_type = front_slope.mansard_type
     lower_angle = front_slope.lower_angle
     upper_angle = front_slope.upper_angle
-    break_h = front_slope.break_height
+    break_pct = front_slope.break_pct
 
     # Party-wall chimneys behind the roof (drawn first so mansard covers their base)
     for child in roof.children:
@@ -1035,7 +1035,7 @@ def _draw_roof(ctx: SVGContext, roof: RoofNode, facade_w: float, cornice_h: floa
     if mansard_type == MansardType.STEEP:
         _draw_steep_mansard(ctx, roof_w, cornice_h, roof_h, lower_angle)
     elif mansard_type == MansardType.BROKEN:
-        _draw_broken_mansard(ctx, roof_w, cornice_h, roof_h, lower_angle, upper_angle, break_h)
+        _draw_broken_mansard(ctx, roof_w, cornice_h, roof_h, lower_angle, upper_angle, break_pct)
     else:
         _draw_shallow_mansard(ctx, roof_w, cornice_h, roof_h, lower_angle)
     ctx.x_origin += ctx.px(roof_overhang)  # restore
@@ -1082,52 +1082,66 @@ def _draw_steep_mansard(ctx: SVGContext, w: float, y0: float, h: float, angle: f
 
 
 def _draw_broken_mansard(ctx: SVGContext, w: float, y0: float, h: float,
-                         lower_angle: float, upper_angle: float, break_h: float):
-    """BROKEN: Steep lower section breaking to flat upper section.
+                         lower_angle: float, upper_angle: float, break_pct: float):
+    """BROKEN: Two straight segments from cornice to ridge.
+
+    Inputs:
+    - lower_angle: angle of the first (steep) segment from horizontal
+    - break_pct:   height of the break as a fraction of h (1.0 = single slope)
+    - upper_angle: angle of the second (flat) segment from horizontal
+
+    Segment 1 starts at cornice edges and rises steeply to the break point,
+    insetting slightly.  Segment 2 picks up from there and angles inward
+    at a shallower angle to the ridge.
 
     Profile (front elevation):
            ______________
-          /              \        <- flat upper slope (20°)
-         /________________\       <- break line
-        |                  |      <- steep lower section (70°, dormer zone)
+          /              \        <- segment 2 (shallow angle)
+         /________________\       <- break line at break_pct * h
+        |                  |      <- segment 1 (steep angle)
         |__________________|     <- cornice line
     """
-    # Lower section: steep, from cornice to break point
-    lower_inset = break_h / math.tan(lower_angle) if lower_angle else 0.1
+    # Segment 1: steep, from cornice (y0) up to break point
+    break_h = h * min(break_pct, 1.0)
+    inset1 = break_h / math.tan(lower_angle) if lower_angle else 0.1
     break_y = y0 + break_h
 
-    # Upper section: flat, from break point to ridge
-    upper_h = h - break_h
-    upper_inset = upper_h / math.tan(upper_angle) if upper_angle else 0.5
-    total_inset = lower_inset + upper_inset
-
-    # Lower steep section (dormer zone)
-    lower_pts = [
+    # Segment 1 polygon
+    seg1_pts = [
         (0, y0),
-        (lower_inset, break_y),
-        (w - lower_inset, break_y),
+        (inset1, break_y),
+        (w - inset1, break_y),
         (w, y0),
     ]
-    ctx.polygon(lower_pts, COLORS["roof_zinc"], stroke_w=0.6)
+    ctx.polygon(seg1_pts, COLORS["roof_zinc"], stroke_w=0.6)
 
-    # Upper flat section
-    upper_pts = [
-        (lower_inset, break_y),
-        (total_inset, y0 + h),
-        (w - total_inset, y0 + h),
-        (w - lower_inset, break_y),
-    ]
-    ctx.polygon(upper_pts, COLORS["roof_slope"], stroke_w=0.6)
-
-    # Break line (visible angle change)
-    ctx.line(lower_inset, break_y, w - lower_inset, break_y, COLORS["outline"], 0.8)
-
-    # Zinc seam lines on the steep lower section
+    # Zinc seam lines on segment 1
     n_seams = 8
     for i in range(1, n_seams):
         sx = i * w / n_seams
-        top_sx = lower_inset + i * (w - 2 * lower_inset) / n_seams
+        top_sx = inset1 + i * (w - 2 * inset1) / n_seams
         ctx.line(sx, y0, top_sx, break_y, COLORS["roof_slope"], 0.3)
+
+    # Segment 2: shallow, from break point up to ridge (skip if break_pct >= 1.0)
+    if break_pct < 1.0:
+        upper_h = h - break_h
+        inset2 = upper_h / math.tan(upper_angle) if upper_angle else 0.5
+        # Clamp: ridge must not reach more than 1/4 into the leftover width
+        leftover_w = w - 2 * inset1
+        max_inset2 = leftover_w * 0.25
+        inset2 = max(0.0, min(inset2, max_inset2))
+        total_inset = inset1 + inset2
+
+        seg2_pts = [
+            (inset1, break_y),
+            (total_inset, y0 + h),
+            (w - total_inset, y0 + h),
+            (w - inset1, break_y),
+        ]
+        ctx.polygon(seg2_pts, COLORS["roof_slope"], stroke_w=0.6)
+
+        # Break line
+        ctx.line(inset1, break_y, w - inset1, break_y, COLORS["outline"], 0.8)
 
 
 def _draw_shallow_mansard(ctx: SVGContext, w: float, y0: float, h: float, angle: float):

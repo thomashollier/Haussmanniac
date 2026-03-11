@@ -112,12 +112,12 @@ class TestDormers:
         assert len(dormers) == bay_count
 
     def test_modest_has_small_dormers(self):
-        """Modest mansard: dormers every other bay, base style PEDIMENT_CURVED (variation may swap)."""
+        """Modest mansard: dormers every other bay, slope-style dormers."""
         roof = _make_roof(style=StylePreset.MODEST, lot_width=15.0)
         dormers = [c for c in roof.children if isinstance(c, DormerNode)]
         assert len(dormers) >= 1
         for d in dormers:
-            assert d.style in (DormerStyle.PEDIMENT_CURVED, DormerStyle.POINTY_ROOF)
+            assert d.style in (DormerStyle.FLAT_SLOPE, DormerStyle.ROUND_SLOPE)
 
     def test_dormers_centered_in_bays(self):
         """Dormers should be centered horizontally within their bay."""
@@ -199,6 +199,96 @@ class TestChimneys:
         widths1 = [c.width for c in ch1]
         widths2 = [c.width for c in ch2]
         assert widths1 != widths2
+
+
+class TestModestRoof:
+    """Tests for the modest building roof overhaul."""
+
+    def test_modest_broken_mansard(self):
+        from core.types import MansardType
+        roof = _make_roof(style=StylePreset.MODEST, lot_width=8.0)
+        assert roof.mansard_type == MansardType.BROKEN
+
+    def test_modest_has_ridge_chimneys(self):
+        """Modest buildings should have ridge chimneys (not just edge)."""
+        from core.profile import get_profile
+        g = HaussmannGrammar(get_profile("modest"))
+        v = Variation(seed=42, style=StylePreset.MODEST)
+        bay_layout = g.solve_bay_layout(8.0)
+        roof = build_roof(
+            lot_width=8.0, lot_depth=10.0, cornice_height=12.0,
+            style=StylePreset.MODEST, variation=v, grammar=g,
+            bay_layout=bay_layout,
+        )
+        chimneys = [c for c in roof.children if isinstance(c, ChimneyNode)]
+        ridge = [c for c in chimneys if c.is_ridge]
+        assert len(ridge) >= 1, "Modest roof should have at least 1 ridge chimney"
+
+    def test_modest_all_chimneys_have_pipes(self):
+        roof = _make_roof(style=StylePreset.MODEST, lot_width=8.0)
+        chimneys = [c for c in roof.children if isinstance(c, ChimneyNode)]
+        for c in chimneys:
+            assert c.has_pipe is True
+
+    def test_vary_mansard_short_no_dormers(self):
+        """When vary_mansard picks short height, build_roof skips dormers."""
+        from core.profile import get_profile
+        g = HaussmannGrammar(get_profile("modest"))
+        v = Variation(seed=42, style=StylePreset.MODEST)
+        # Force short roof path
+        roof = build_roof(
+            lot_width=8.0, lot_depth=10.0, cornice_height=12.0,
+            style=StylePreset.MODEST, variation=v, grammar=g,
+            mansard_height=1.3, has_dormers=False,
+        )
+        dormers = [c for c in roof.children if isinstance(c, DormerNode)]
+        assert len(dormers) == 0, "Short roof should have no dormers"
+
+    def test_vary_mansard_tall_has_dormers(self):
+        """When vary_mansard picks tall height, dormers should appear."""
+        from core.profile import get_profile
+        g = HaussmannGrammar(get_profile("modest"))
+        v = Variation(seed=42, style=StylePreset.MODEST)
+        roof = build_roof(
+            lot_width=8.0, lot_depth=10.0, cornice_height=12.0,
+            style=StylePreset.MODEST, variation=v, grammar=g,
+            mansard_height=2.0, has_dormers=True,
+        )
+        dormers = [c for c in roof.children if isinstance(c, DormerNode)]
+        assert len(dormers) >= 1, "Tall roof should have dormers"
+
+    def test_modest_ridge_more_than_edge_chimneys(self):
+        """With ridge_to_edge_ratio=2.0, ridge chimneys should outnumber edge."""
+        from core.profile import get_profile
+        g = HaussmannGrammar(get_profile("modest"))
+        v = Variation(seed=42, style=StylePreset.MODEST)
+        bay_layout = g.solve_bay_layout(8.0)
+        roof = build_roof(
+            lot_width=8.0, lot_depth=10.0, cornice_height=12.0,
+            style=StylePreset.MODEST, variation=v, grammar=g,
+            bay_layout=bay_layout,
+        )
+        chimneys = [c for c in roof.children if isinstance(c, ChimneyNode)]
+        ridge = [c for c in chimneys if c.is_ridge]
+        edge = [c for c in chimneys if not c.is_ridge]
+        assert len(ridge) >= len(edge), (
+            f"Ridge ({len(ridge)}) should be ≥ edge ({len(edge)}) with ratio=2.0"
+        )
+
+    def test_vary_mansard_50_50_distribution(self):
+        """Over many seeds, ~half short (no dormers), ~half tall (dormers)."""
+        from core.profile import get_profile
+        g = HaussmannGrammar(get_profile("modest"))
+        no_dormer_count = 0
+        for seed in range(200):
+            v = Variation(seed=seed, style=StylePreset.MODEST)
+            h, has_dormers, _, _, _ = v.vary_mansard(g)
+            if not has_dormers:
+                no_dormer_count += 1
+        # Expect ~100 ± 30 (loose bounds for randomness)
+        assert 60 < no_dormer_count < 140, (
+            f"No-dormer count {no_dormer_count}/200 — expected ~100"
+        )
 
 
 class TestRoofDeterminism:

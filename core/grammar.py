@@ -78,7 +78,7 @@ class RoofSpec:
     mansard_lower_angle_deg: float  # Steep section angle
     mansard_upper_angle_deg: float  # Flat section angle (BROKEN/SHALLOW)
     mansard_height: float           # Total mansard height
-    break_height: float             # Height of steep-to-flat transition (BROKEN only)
+    break_pct: float                # Break as fraction of total height (1.0 = no upper segment)
     dormer_style: DormerStyle
     dormer_every_n_bays: int        # 1 = one per bay, 2 = every other, etc.
     chimney_count: int
@@ -390,9 +390,9 @@ class HaussmannGrammar:
         if use_door:
             door_bay_index = min(door_bay_index, bay_count - 1)
 
-        # Reduce bay count if edge piers too narrow
+        # Reduce bay count if edge piers too narrow (never below 3)
         min_edge = 0.1
-        while bay_count >= 3:
+        while bay_count > 3:
             interior = _interior(bay_count, door_bay_index)
             edge = (facade_width - interior) / 2.0
             if edge >= min_edge:
@@ -402,8 +402,48 @@ class HaussmannGrammar:
             if use_door:
                 door_bay_index = min(door_bay_index, bay_count - 1)
 
+        # If 3 bays still don't fit, narrow bays to fit with minimum edge piers
+        if bay_count == 3:
+            interior = _interior(3, door_bay_index)
+            edge = (facade_width - interior) / 2.0
+            if edge < min_edge:
+                available = facade_width - 2 * min_edge
+                if use_door and 0 <= door_bay_index < 3:
+                    bay_w = available / (2 + bp.door_bay_width_ratio)
+                else:
+                    bay_w = available / 3
+                bay_pier_w = bay_w * bp.pier_ratio
+                half_pier = bay_pier_w / 2.0
+                bay_window_w = bay_w - bay_pier_w
+                door_bay_w = bay_w * bp.door_bay_width_ratio if use_door else bay_w
+                door_window_w = door_bay_w - bay_pier_w if use_door else bay_window_w
+                interior = _interior(bay_count, door_bay_index)
+                edge = max(0.0, (facade_width - interior) / 2.0)
+
         interior = _interior(bay_count, door_bay_index)
         edge = max(0.0, (facade_width - interior) / 2.0)
+
+        # Widen bays if edge piers are disproportionately wide (> 75% of bay width)
+        # This prevents the "tiny building, huge edges" look on modest facades.
+        # Cap widening at profile max bay width to keep proportions reasonable.
+        max_edge = bay_w * 0.75
+        if edge > max_edge and bay_count >= 3:
+            target_interior = facade_width - 2 * max_edge
+            if use_door and 0 <= door_bay_index < bay_count:
+                adj_bay_w = target_interior / ((bay_count - 1) + bp.door_bay_width_ratio)
+            else:
+                adj_bay_w = target_interior / bay_count
+            # Only widen, never narrow below current, cap at profile max
+            adj_bay_w = min(adj_bay_w, bp.bay_width[2])
+            if adj_bay_w > bay_w:
+                bay_w = adj_bay_w
+                bay_pier_w = bay_w * bp.pier_ratio
+                half_pier = bay_pier_w / 2.0
+                bay_window_w = bay_w - bay_pier_w
+                door_bay_w = bay_w * bp.door_bay_width_ratio if use_door else bay_w
+                door_window_w = door_bay_w - bay_pier_w if use_door else bay_window_w
+                interior = _interior(bay_count, door_bay_index)
+                edge = max(0.0, (facade_width - interior) / 2.0)
 
         # Build specs with cumulative x positioning
         specs: list[BaySpec] = []
@@ -473,6 +513,9 @@ class HaussmannGrammar:
             # Noble windows must never be shorter than upper floor windows
             min_noble_h = floor_height * wp.upper_height_ratio
             win_h = max(win_h, min_noble_h)
+            # Cap noble window at max fraction of floor height
+            max_noble_h = floor_height * wp.noble_max_height_ratio
+            win_h = min(win_h, max_noble_h)
         else:
             # Floors above noble: windows cover upper_height_ratio of floor height
             win_h = floor_height * wp.upper_height_ratio
@@ -550,24 +593,29 @@ class HaussmannGrammar:
         # -- Mansard type and angles ----------------------------------------
         if not is_front:
             mansard_type = MansardType.SHALLOW
+        elif style == StylePreset.BOULEVARD:
+            mansard_type = MansardType.STEEP
         elif style == StylePreset.RESIDENTIAL:
             mansard_type = MansardType.BROKEN
         else:
-            # BOULEVARD and MODEST: steep near-vertical mansard
-            mansard_type = MansardType.STEEP
+            # MODEST: broken mansard (shorter break than residential)
+            mansard_type = MansardType.BROKEN
 
         if mansard_type == MansardType.STEEP:
             lower_angle = rp.lower_angle_deg   # Near-vertical
             upper_angle = 15.0                 # Nearly flat cap (barely visible)
-            break_h = 0.0                      # No break — single steep face
+            break_pct = 1.0                    # No break — single steep face
         elif mansard_type == MansardType.BROKEN:
             lower_angle = 70.0                 # Very steep lower section
             upper_angle = rp.upper_angle_deg   # Flatter upper section
-            break_h = 2.0                      # Break at 2m — just above dormer heads
+            break_pct = 0.85                   # Break at 85% of total height
+            if style == StylePreset.MODEST:
+                lower_angle = 80.0             # Near-vertical for modest
+                break_pct = 0.95               # Break at 95% of total height
         else:  # SHALLOW
             lower_angle = 65.0     # 25° from vertical
             upper_angle = 65.0     # Same angle (no break)
-            break_h = 0.0
+            break_pct = 1.0
 
         # -- Dormers -------------------------------------------------------
         if mansard_type == MansardType.SHALLOW:
@@ -577,8 +625,8 @@ class HaussmannGrammar:
             dormer_every = 1       # Every bay — curved pediment cap
             dormer_style = DormerStyle.PEDIMENT_CURVED
         elif style == StylePreset.MODEST:
-            dormer_every = 2       # Every other bay — curved pediment
-            dormer_style = DormerStyle.PEDIMENT_CURVED
+            dormer_every = 1       # Placement handled by dormer_placement param
+            dormer_style = DormerStyle.FLAT_SLOPE
         else:
             dormer_every = 1       # Every bay — triangular pediment
             dormer_style = DormerStyle.PEDIMENT_TRIANGLE
@@ -591,7 +639,7 @@ class HaussmannGrammar:
             mansard_lower_angle_deg=lower_angle,
             mansard_upper_angle_deg=upper_angle,
             mansard_height=rp.mansard_height,
-            break_height=break_h,
+            break_pct=break_pct,
             dormer_style=dormer_style,
             dormer_every_n_bays=dormer_every,
             chimney_count=chimney_count,

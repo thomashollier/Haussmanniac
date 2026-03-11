@@ -73,6 +73,7 @@ class WindowProportions:
     entresol_height_ratio: float = 0.60    # window height / floor height (entresol)
     surround_pad: float = 0.05            # border thickness (metres)
     sill_position_ratio: float = 0.55      # sill position in remaining space below window
+    noble_max_height_ratio: float = 0.78   # cap noble window at this fraction of floor height
 
 
 @dataclass
@@ -111,11 +112,13 @@ class BalconyParams:
 class RoofParams:
     """Mansard roof parameters."""
     mansard_height: float = 2.5
+    mansard_height_short: float = 0.0  # when > 0, variation picks between short/tall
     lower_angle_deg: float = 80.0
     upper_angle_deg: float = 20.0
     dormer_width_ratio: float = 0.35
     dormer_max_height: float = 1.6    # metres — cap on dormer height
     chimney_height: float = 2.0
+    ridge_to_edge_ratio: float = 1.0  # ridge chimney count multiplier vs edge
 
 
 @dataclass
@@ -186,31 +189,44 @@ RESIDENTIAL = FacadeProfile(
 
 MODEST = FacadeProfile(
     name="modest",
-    typical_lot_width=(6.0, 7.8, 10.0),  # 3 bays; overlaps residential by 25%
+    typical_lot_width=(7.0, 7.45, 10.0),
     typical_lot_depth=10.0,
     typical_num_floors=5,       # no entresol, no 5th floor
     has_entresol=False,
-    roof=RoofParams(mansard_height=1.875, dormer_width_ratio=0.25, dormer_max_height=1.1, chimney_height=1.2),  # 25% shorter mansard, small dormers, shorter chimneys
-    floors=FloorHeights(
-        ground=(2.4, 3.0, 3.6),
-        entresol=(0, 0, 0),  # no entresol
-        noble=(2.1, 2.65, 3.2),
-        third=(1.9, 2.5, 3.0),
-        fourth=(1.8, 2.3, 2.8),  # taper continues down
+    roof=RoofParams(
+        mansard_height=2.65,           # tall roof (with dormers)
+        mansard_height_short=1.725,    # short roof (no dormers)
+        dormer_width_ratio=0.25,
+        dormer_max_height=1.1,
+        chimney_height=1.2,
+        ridge_to_edge_ratio=2.0,       # 2:1 ridge-to-edge chimney ratio
     ),
-    bays=BayProportions(),
+    floors=FloorHeights(
+        ground=(2.4, 3.15, 3.6),
+        entresol=(0, 0, 0),  # no entresol
+        noble=(2.1, 2.875, 3.2),
+        third=(1.9, 2.83, 3.0),
+        fourth=(1.8, 2.6, 2.8),
+    ),
+    bays=BayProportions(
+        bay_width=(1.5, 2.1, 2.5),
+        pier_ratio=0.315,
+    ),
     windows=WindowProportions(
         width_ratio=0.55,
-        noble_bordered_aspect=2.0,
-        upper_height_ratio=0.60,    # 20% shorter than default 0.75
+        noble_bordered_aspect=1.575,
+        upper_height_ratio=0.54,
+        fifth_height_ratio=0.52,
         surround_pad=0.03,
-        sill_position_ratio=0.60,   # more wall below window than above
+        sill_position_ratio=0.62,
+        noble_max_height_ratio=0.78,
     ),
     ornament=OrnamentParams(pilaster_width=0.0, has_pediments=False),
     balconies=BalconyParams(
         continuous_floors=[],
         balconette_floors=["FIFTH"],
-        balcony_depth=0.30,
+        balcony_depth=0.325,
+        balconette_depth=0.245,
     ),
 )
 
