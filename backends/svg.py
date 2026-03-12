@@ -356,7 +356,7 @@ def _draw_upper_floor(ctx: SVGContext, node: FloorNode, facade_w: float, labels:
     if has_continuous:
         for child in node.children:
             if isinstance(child, BalconyNode) and child.is_continuous:
-                _draw_continuous_balcony(ctx, child, y0, facade_w)
+                _draw_continuous_balcony(ctx, child, y0, facade_w, bays)
 
     if labels:
         ft_name = node.floor_type.name.capitalize()
@@ -581,17 +581,42 @@ def _draw_custom_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_
                 win_y = floor_y + child.transform.position[1]
                 _draw_window(ctx, child, win_x, win_y, bay.width)
 
-    elif style == CustomBayStyle.ORNAMENT:
-        # Decorative lozenge/medallion in stone color
+    elif style == CustomBayStyle.STONEWORK:
+        # Rusticated stone panel with horizontal coursing lines
+        panel_w = bay.width * 0.80
+        panel_h = floor_h * 0.55
+        panel_x = bay.x_offset + (bay.width - panel_w) / 2
+        panel_y = floor_y + (floor_h - panel_h) / 2
+        ctx.rect(panel_x, panel_y, panel_w, panel_h, COLORS["ornament"], stroke_w=0.6)
+        # 3-4 horizontal coursing lines (rustication bands)
+        n_courses = max(3, int(panel_h / 0.25))
+        course_h = panel_h / (n_courses + 1)
+        for i in range(1, n_courses + 1):
+            ly = panel_y + i * course_h
+            ctx.line(panel_x, ly, panel_x + panel_w, ly, "#A89880", 0.5)
+
+    elif style == CustomBayStyle.GEOMETRIC:
+        # Diamond (rotated square) inscribed in bay — classic Haussmann stone relief
         cx = bay.x_offset + bay.width / 2
         cy = floor_y + floor_h * 0.5
-        r = min(bay.width, floor_h) * 0.2
-        steps = 24
-        pts = []
-        for i in range(steps + 1):
-            angle = 2 * math.pi * i / steps
-            pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        r = min(bay.width, floor_h) * 0.25
+        # Outer diamond
+        pts = [
+            (cx, cy + r),       # top
+            (cx + r, cy),       # right
+            (cx, cy - r),       # bottom
+            (cx - r, cy),       # left
+        ]
         ctx.polygon(pts, COLORS["ornament"], stroke_w=0.6)
+        # Inner diamond outline (smaller)
+        ri = r * 0.6
+        inner_pts = [
+            (cx, cy + ri),
+            (cx + ri, cy),
+            (cx, cy - ri),
+            (cx - ri, cy),
+        ]
+        ctx.polygon(inner_pts, COLORS["wall"], stroke=COLORS["ornament"], stroke_w=0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -872,27 +897,47 @@ def _draw_intermediate_cornice(ctx: SVGContext, floor_y: float, facade_w: float)
              stroke=COLORS["cornice_stroke"], stroke_w=0.3)
 
 
-def _draw_continuous_balcony(ctx: SVGContext, bal: BalconyNode, floor_y: float, facade_w: float):
-    """Draw a prominent continuous balcony spanning the facade.
+def _draw_continuous_balcony(ctx: SVGContext, bal: BalconyNode, floor_y: float,
+                            facade_w: float, bays: list | None = None):
+    """Draw a prominent continuous balcony spanning the bay extent.
 
-    Renders a thick stone slab with corbels underneath, and a tall
-    wrought-iron railing with decorative scrollwork pattern.
+    The balcony runs from the left edge of the first bay to the right
+    edge of the last bay (plus a small overhang), not the full facade
+    width.  This keeps it inside the edge piers.
     """
     slab_h = 0.12
-    slab_overhang = 0.15  # Balcony projects past facade edges
+    slab_overhang = 0.15  # Balcony projects slightly past outermost bays
+
+    # Compute balcony span from bay extents (outer edge of half-piers)
+    if bays and len(bays) >= 2:
+        # Half-pier width = gap between adjacent bay windows / 2
+        half_pier = (bays[1].x_offset - (bays[0].x_offset + bays[0].width)) / 2.0
+        bal_left = bays[0].x_offset - half_pier
+        bal_right = bays[-1].x_offset + bays[-1].width + half_pier
+    elif bays:
+        bal_left = bays[0].x_offset
+        bal_right = bays[0].x_offset + bays[0].width
+    else:
+        bal_left = 0.0
+        bal_right = facade_w
+    bal_w = bal_right - bal_left
+
+    span_left = bal_left - slab_overhang
+    span_right = bal_right + slab_overhang
+    span_w = span_right - span_left
 
     # Shadow under the slab (suggests depth/projection)
     shadow_h = 0.06
-    ctx.rect(-slab_overhang, floor_y - shadow_h, facade_w + slab_overhang * 2, shadow_h,
+    ctx.rect(span_left, floor_y - shadow_h, span_w, shadow_h,
              "#B0A898", stroke_w=0.0)
 
     # Corbels / brackets under the slab
     corbel_w = 0.10
     corbel_h = 0.18
     corbel_spacing = 0.6
-    n_corbels = int(facade_w / corbel_spacing)
+    n_corbels = int(bal_w / corbel_spacing)
     for i in range(n_corbels + 1):
-        cx = i * corbel_spacing
+        cx = bal_left + i * corbel_spacing
         # Trapezoid corbel
         ctx.polygon([
             (cx - corbel_w * 0.3, floor_y - shadow_h),
@@ -902,10 +947,10 @@ def _draw_continuous_balcony(ctx: SVGContext, bal: BalconyNode, floor_y: float, 
         ], COLORS["cornice"], stroke=COLORS["cornice_stroke"], stroke_w=0.3)
 
     # Stone slab
-    ctx.rect(-slab_overhang, floor_y, facade_w + slab_overhang * 2, slab_h,
+    ctx.rect(span_left, floor_y, span_w, slab_h,
              COLORS["balcony_floor"], stroke=COLORS["cornice_stroke"], stroke_w=0.3)
     # Slab edge line (strong)
-    ctx.line(-slab_overhang, floor_y + slab_h, facade_w + slab_overhang,
+    ctx.line(span_left, floor_y + slab_h, span_right,
              floor_y + slab_h, COLORS["outline"], 1.0)
 
     # Wrought-iron railing
@@ -913,34 +958,32 @@ def _draw_continuous_balcony(ctx: SVGContext, bal: BalconyNode, floor_y: float, 
     rail_h = bal.railing_height
 
     # Top rail (thick)
-    ctx.rect(-slab_overhang, rail_base + rail_h - 0.03,
-             facade_w + slab_overhang * 2, 0.03,
+    ctx.rect(span_left, rail_base + rail_h - 0.03,
+             span_w, 0.03,
              COLORS["balcony_rail"], stroke_w=0.5)
     # Bottom rail
-    ctx.line(-slab_overhang, rail_base + 0.02,
-             facade_w + slab_overhang, rail_base + 0.02,
+    ctx.line(span_left, rail_base + 0.02,
+             span_right, rail_base + 0.02,
              COLORS["balcony_rail"], 0.5)
     # Mid rail
-    ctx.line(-slab_overhang, rail_base + rail_h * 0.5,
-             facade_w + slab_overhang, rail_base + rail_h * 0.5,
+    ctx.line(span_left, rail_base + rail_h * 0.5,
+             span_right, rail_base + rail_h * 0.5,
              COLORS["balcony_rail"], 0.3)
 
-    # Vertical bars — extend past building edges to match slab overhang
+    # Vertical bars
     bar_spacing = 0.08
-    rail_left = -slab_overhang
-    rail_right = facade_w + slab_overhang
-    n_bars = int((rail_right - rail_left) / bar_spacing)
+    n_bars = int(span_w / bar_spacing)
     for i in range(n_bars + 1):
-        bx = rail_left + i * bar_spacing
+        bx = span_left + i * bar_spacing
         ctx.line(bx, rail_base + 0.02, bx, rail_base + rail_h - 0.03,
                  COLORS["balcony_rail"], 0.4)
     # Ensure a post at the far right edge
-    ctx.line(rail_right, rail_base + 0.02, rail_right, rail_base + rail_h - 0.03,
+    ctx.line(span_right, rail_base + 0.02, span_right, rail_base + rail_h - 0.03,
              COLORS["balcony_rail"], 0.4)
 
     # Decorative scroll circles between bars (every 4th bar)
     for i in range(0, n_bars, 4):
-        scx = -slab_overhang + i * bar_spacing + bar_spacing * 2
+        scx = span_left + i * bar_spacing + bar_spacing * 2
         scy = rail_base + rail_h * 0.3
         r = bar_spacing * 1.2
         ctx.elements.append(
@@ -1334,15 +1377,26 @@ def _draw_dormer(ctx: SVGContext, dormer: DormerNode, cx: float, cy: float):
         return
 
     # --- Pediment, pointy-roof, and flat-slope styles: rectangular body + rectangular window + cap ---
-    body_h = h * 0.65
+    # PEDIMENT styles: taller body, narrower window for vertical aspect, sit higher
+    if style in ("PEDIMENT_TRIANGLE", "PEDIMENT_CURVED"):
+        cy += 0.10  # sit a little higher on the mansard
+        body_h = h * 0.78
+        win_pad = w * 0.22
+        win_top_pad = h * 0.06
+    elif style == "FLAT_SLOPE":
+        body_h = h * 0.75
+        win_pad = w * 0.15
+        win_top_pad = h * 0.06
+    else:
+        body_h = h * 0.65
+        win_pad = w * 0.18
+        win_top_pad = h * 0.08
     cap_base_y = cy + body_h
 
     # Dormer body (stone cheeks)
     ctx.rect(x, cy, w, body_h, COLORS["dormer"], stroke_w=0.6)
 
     # Dormer window
-    win_pad = w * 0.18
-    win_top_pad = h * 0.08
     win_h = body_h - win_top_pad * 2
     ctx.rect(x + win_pad, cy + win_top_pad, w - win_pad * 2, win_h,
              COLORS["dormer_window"], stroke_w=0.5)
@@ -1406,7 +1460,7 @@ def _draw_dormer(ctx: SVGContext, dormer: DormerNode, cx: float, cy: float):
     else:  # FLAT_SLOPE
         # Low-slope zinc roof angled toward street — from elevation, a tall
         # rectangle: the back edge meets the mansard high up
-        cap_h = h * 0.30
+        cap_h = h * 0.22
         overhang = w * 0.06
         ctx.rect(x - overhang, cap_base_y, w + overhang * 2, cap_h,
                  COLORS["roof_zinc"], stroke_w=0.6)

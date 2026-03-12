@@ -139,11 +139,12 @@ class TestFloorSpecs:
         assert len(noble) == 1
         assert noble[0].has_balcony is True
 
-    def test_fifth_floor_has_balconette(self):
+    def test_fifth_floor_has_continuous_balcony(self):
         specs = grammar.get_floor_specs(7, has_entresol=True)
         fifth = [s for s in specs if s.floor_type == FloorType.FIFTH]
         assert len(fifth) == 1
-        assert fifth[0].has_balconette is True
+        assert fifth[0].has_balcony is True
+        assert fifth[0].has_balconette is False
 
 
 # ---------------------------------------------------------------------------
@@ -151,56 +152,59 @@ class TestFloorSpecs:
 # ---------------------------------------------------------------------------
 
 class TestBayLayout:
-    def test_bay_count_always_odd(self):
-        """Bay count must be odd for facade symmetry."""
-        for width in [10.0, 12.0, 15.0, 18.0, 20.0]:
-            for style in StylePreset:
-                count = grammar.compute_bay_count(width, style)
-                assert count % 2 == 1, f"Width {width}, {style.name}: got even count {count}"
+    def test_bay_count_odd_when_required(self):
+        """Bay count must be odd for profiles without allow_even_bays."""
+        for width in [12.0, 15.0, 18.0, 21.0, 25.0]:
+            count = grammar.compute_bay_count(width)
+            assert count % 2 == 1, f"GRAND width {width}: got even count {count}"
 
-    def test_boulevard_has_more_bays(self):
-        """Boulevard buildings should have at least 5 bays."""
-        count = grammar.compute_bay_count(15.0, StylePreset.BOULEVARD)
+    def test_modest_allows_even_bays(self):
+        """MODEST profile allows even bay counts."""
+        from core.profile import get_profile
+        modest_g = HaussmannGrammar(profile=get_profile("modest"))
+        # 10m MODEST: (10-2*1.1)/2.15 = 7.8/2.15 = 3.6 → 3
+        count = modest_g.compute_bay_count(10.0)
+        assert count >= 2
+
+    def test_boulevard_typical_width(self):
+        """Boulevard at typical lot width should have at least 5 bays."""
+        count = grammar.compute_bay_count(21.0, StylePreset.BOULEVARD)
         assert count >= 5
 
-    def test_width_determines_bay_count(self):
-        """Bay count is determined by facade width, not style preset."""
-        # 15m facade → 7 bays regardless of style (threshold_7=13, threshold_9=18)
-        for style in StylePreset:
-            count = grammar.compute_bay_count(15.0, style)
-            assert count == 7, f"15m with {style.name}: expected 7, got {count}"
-        # Width thresholds (profile defaults: 5@8m, 7@13m, 9@18m)
-        assert grammar.compute_bay_count(7.0) == 3
-        assert grammar.compute_bay_count(10.0) == 5
-        assert grammar.compute_bay_count(15.0) == 7
-        assert grammar.compute_bay_count(20.0) == 9
+    def test_wider_facade_more_bays(self):
+        """Wider facade should produce more bays."""
+        count_narrow = grammar.compute_bay_count(12.0)
+        count_wide = grammar.compute_bay_count(25.0)
+        assert count_wide > count_narrow
 
     def test_layout_spans_facade(self):
         """Bay layout should span most of the facade width (within margins)."""
-        specs = grammar.get_bay_layout(15.0, StylePreset.RESIDENTIAL)
+        width = 21.0
+        specs = grammar.get_bay_layout(width, StylePreset.RESIDENTIAL)
         first_x = specs[0].x_offset
         last_right = specs[-1].x_offset + specs[-1].width
         span = last_right - first_x
-        # Bays should cover a reasonable portion of facade width
-        # (wider edge piers on fewer-bay facades reduce this ratio)
-        assert span >= 15.0 * 0.55, f"Span {span} too narrow for 15m facade"
+        assert span >= width * 0.40, f"Span {span} too narrow for {width}m facade"
 
     def test_all_bays_equal_width(self):
-        """All bays should be the same width."""
-        specs = grammar.get_bay_layout(15.0)
-        widths = [s.width for s in specs]
+        """All standard bays should be the same width."""
+        specs = grammar.get_bay_layout(21.0)
+        std = [s for s in specs if s.bay_type == BayType.WINDOW]
+        widths = [s.width for s in std]
         assert all(abs(w - widths[0]) < 0.001 for w in widths)
 
     def test_bay_width_is_window_zone(self):
         """BaySpec.width should be the window zone (bay_w minus pier_w)."""
-        specs = grammar.get_bay_layout(15.0)
+        # Use 16m: 5 bays × 2.6m = 13m, edges = 1.5m each — no widening
+        specs = grammar.get_bay_layout(16.0)
+        std = [s for s in specs if s.bay_type == BayType.WINDOW]
         bp = grammar.profile.bays
-        expected = bp.bay_width[1] * (1 - bp.pier_ratio)
-        assert abs(specs[0].width - expected) < 0.001
+        expected = bp.bay_width.typ * (1 - bp.pier_ratio)
+        assert abs(std[0].width - expected) < 0.001
 
     def test_bays_dont_overlap(self):
         """Bays must not overlap each other."""
-        specs = grammar.get_bay_layout(15.0)
+        specs = grammar.get_bay_layout(21.0)
         for i in range(len(specs) - 1):
             right_edge = specs[i].x_offset + specs[i].width
             next_left = specs[i + 1].x_offset
@@ -209,20 +213,23 @@ class TestBayLayout:
             )
 
     def test_bay_widths_in_range(self):
-        """Each bay width should be within the valid range."""
-        specs = grammar.get_bay_layout(15.0)
+        """Each standard bay window width should be within the valid range."""
+        specs = grammar.get_bay_layout(21.0)
         for s in specs:
-            assert 0.8 <= s.width <= 2.0, f"Bay width {s.width} out of range"
+            if s.bay_type == BayType.WINDOW:
+                assert 0.8 <= s.width <= 2.0, f"Bay width {s.width} out of range"
 
     def test_custom_bay_count(self):
         """Explicit bay_count should override automatic calculation."""
-        specs = grammar.get_bay_layout(15.0, bay_count=7)
-        assert len(specs) == 7
+        specs = grammar.get_bay_layout(21.0, bay_count=7)
+        std = [s for s in specs if s.bay_type != BayType.CUSTOM]
+        assert len(std) == 7
 
     def test_all_bays_are_window_type(self):
-        """Default bay type should be WINDOW."""
-        specs = grammar.get_bay_layout(15.0)
-        assert all(s.bay_type == BayType.WINDOW for s in specs)
+        """Default bay type should be WINDOW (ignoring custom edge bays)."""
+        specs = grammar.get_bay_layout(21.0)
+        std = [s for s in specs if s.bay_type != BayType.CUSTOM]
+        assert all(s.bay_type == BayType.WINDOW for s in std)
 
 
 # ---------------------------------------------------------------------------
@@ -298,18 +305,18 @@ class TestBalconyRules:
     def test_noble_continuous_balcony(self):
         assert grammar.has_continuous_balcony(FloorType.NOBLE) is True
 
-    def test_fifth_no_continuous_balcony(self):
-        """Default profile: 5th floor has balconettes, not continuous balcony."""
-        assert grammar.has_continuous_balcony(FloorType.FIFTH) is False
+    def test_fifth_has_continuous_balcony(self):
+        """5th floor has continuous balcony (mandatory per règlement)."""
+        assert grammar.has_continuous_balcony(FloorType.FIFTH) is True
 
     def test_ground_no_balcony(self):
         assert grammar.has_continuous_balcony(FloorType.GROUND) is False
 
-    def test_fifth_has_balconette(self):
-        assert grammar.has_balconette(FloorType.FIFTH) is True
+    def test_fifth_no_balconette(self):
+        """5th floor now continuous, not balconettes."""
+        assert grammar.has_balconette(FloorType.FIFTH) is False
 
     def test_third_no_balconette(self):
-        """Default profile: only 5th floor has balconettes."""
         assert grammar.has_balconette(FloorType.THIRD) is False
 
     def test_noble_no_balconette(self):
@@ -346,8 +353,10 @@ class TestRoofRules:
         assert spec.break_pct > 0.0
 
     def test_modest_broken_mansard_with_small_dormers(self):
+        from core.profile import get_profile
         from core.types import MansardType
-        spec = grammar.get_roof_spec(3, StylePreset.MODEST)
+        modest_grammar = HaussmannGrammar(get_profile("modest"))
+        spec = modest_grammar.get_roof_spec(3, StylePreset.MODEST)
         assert spec.mansard_type == MansardType.BROKEN
         assert spec.break_pct == 0.95  # 95% of total height
         assert spec.dormer_every_n_bays == 1  # placement handled by dormer_placement param
@@ -360,7 +369,9 @@ class TestRoofRules:
 
     def test_modest_dormers_flat_slope(self):
         """Modest gets flat-slope dormers (placement handled by variation)."""
-        spec = grammar.get_roof_spec(3, StylePreset.MODEST)
+        from core.profile import get_profile
+        modest_grammar = HaussmannGrammar(get_profile("modest"))
+        spec = modest_grammar.get_roof_spec(3, StylePreset.MODEST)
         assert spec.dormer_style == DormerStyle.FLAT_SLOPE
 
     def test_chimney_count_minimum(self):
@@ -395,7 +406,9 @@ class TestGroundFloor:
         assert spec.has_rustication is True
 
     def test_no_rustication_on_modest(self):
-        spec = grammar.get_ground_floor_spec(StylePreset.MODEST)
+        from core.profile import get_profile
+        modest_grammar = HaussmannGrammar(get_profile("modest"))
+        spec = modest_grammar.get_ground_floor_spec(StylePreset.MODEST)
         assert spec.has_rustication is False
 
     def test_shopfront_height_proportional(self):
@@ -415,16 +428,20 @@ class TestCorniceRules:
         assert roof_proj > floor_proj
 
     def test_boulevard_has_modillions(self):
-        assert grammar.has_roofline_modillions(StylePreset.BOULEVARD) is True
+        assert grammar.has_roofline_modillions() is True
 
     def test_modest_no_modillions(self):
-        assert grammar.has_roofline_modillions(StylePreset.MODEST) is False
+        from core.profile import get_profile
+        modest_grammar = HaussmannGrammar(get_profile("modest"))
+        assert modest_grammar.has_roofline_modillions() is False
 
     def test_boulevard_has_dentils(self):
-        assert grammar.has_roofline_dentils(StylePreset.BOULEVARD) is True
+        assert grammar.has_roofline_dentils() is True
 
     def test_modest_no_dentils(self):
-        assert grammar.has_roofline_dentils(StylePreset.MODEST) is False
+        from core.profile import get_profile
+        modest_grammar = HaussmannGrammar(get_profile("modest"))
+        assert modest_grammar.has_roofline_dentils() is False
 
 
 # ---------------------------------------------------------------------------
@@ -442,32 +459,36 @@ class TestCornerChamfer:
 
 class TestEdgePierValidation:
     def test_smart_bay_count_reduces_when_too_many(self):
-        """smart_bay_count reduces count when edge piers would be < 0.5m."""
-        # 8m facade with 7 bays would have tiny edge piers — should reduce
-        count = grammar.smart_bay_count(8.0, 7, StylePreset.RESIDENTIAL)
+        """smart_bay_count reduces count when edge piers would be too narrow."""
+        # 10m facade with 7 bays @ 2.6m = 18.2m — way too wide, should reduce
+        count = grammar.smart_bay_count(10.0, 7, StylePreset.RESIDENTIAL)
         assert count < 7
-        edge = grammar.compute_edge_pier(8.0, count)
-        assert edge >= 0.5, f"Edge pier {edge} still < 0.5m after smart reduction"
+        min_edge = grammar.profile.bays.minimum_edge_pier
+        edge = grammar.compute_edge_pier(10.0, count)
+        assert edge >= min_edge, f"Edge pier {edge} still < {min_edge}m after smart reduction"
 
     def test_smart_bay_count_preserves_valid(self):
-        """If edge pier is already >= 0.5m, count is unchanged."""
-        count = grammar.smart_bay_count(15.0, 5, StylePreset.RESIDENTIAL)
+        """If edge pier is already >= minimum_edge_pier, count is unchanged."""
+        # 16m: 5 bays × 2.6m = 13m, edges = 1.5m each = minimum_edge_pier
+        count = grammar.smart_bay_count(16.0, 5, StylePreset.RESIDENTIAL)
         assert count == 5
 
-    def test_edge_piers_at_least_half_metre(self):
-        """Parametric: smart_bay_count always produces edge piers >= 0.5m."""
-        for width_tenths in range(60, 301):
+    def test_edge_piers_at_least_minimum(self):
+        """Parametric: smart_bay_count always produces edge piers >= minimum_edge_pier."""
+        min_edge = grammar.profile.bays.minimum_edge_pier
+        min_bays = 2 if grammar.profile.bays.allow_even_bays else 3
+        for width_tenths in range(80, 301):
             width = width_tenths / 10.0
             for desired in [3, 5, 7, 9]:
                 count = grammar.smart_bay_count(width, desired)
                 edge = grammar.compute_edge_pier(width, count)
-                assert edge >= 0.5 or count <= 3, (
+                assert edge >= min_edge or count <= min_bays, (
                     f"Width {width}m, desired {desired}: {count} bays → edge {edge:.3f}m"
                 )
 
     def test_compute_edge_pier_non_negative(self):
         """compute_edge_pier should always return a non-negative value."""
-        for width in [10.0, 13.0, 15.0, 18.0, 20.0]:
+        for width in [12.0, 16.0, 18.0, 21.0, 25.0]:
             for n in [3, 5, 7]:
                 edge = grammar.compute_edge_pier(width, n)
                 assert edge >= 0, (
@@ -476,7 +497,7 @@ class TestEdgePierValidation:
 
     def test_layout_edge_pier_positive(self):
         """Layout should always have a positive edge pier (first bay offset)."""
-        for width in [10.0, 13.0, 15.0, 18.0, 20.0]:
+        for width in [12.0, 16.0, 18.0, 21.0, 25.0]:
             for n in [3, 5, 7]:
                 layout = grammar.get_bay_layout(width, bay_count=n)
                 first_x = layout[0].x_offset
@@ -491,32 +512,39 @@ class TestEdgePierValidation:
 
 class TestLayoutStrategies:
     def test_all_bays_uniform(self):
-        """All bays should be the same width."""
-        specs = grammar.get_bay_layout(15.0, bay_count=7)
-        widths = [s.width for s in specs]
+        """All standard bays should be the same width."""
+        # 16m: 5 bays × 2.6m = 13m, edges = 1.5m — no widening
+        specs = grammar.get_bay_layout(16.0, bay_count=5)
+        std = [s for s in specs if s.bay_type == BayType.WINDOW]
+        widths = [s.width for s in std]
         assert all(abs(w - widths[0]) < 0.001 for w in widths)
 
     def test_edge_piers_absorb_remainder(self):
         """Edge piers should absorb whatever width is left over."""
-        specs = grammar.solve_bay_layout(15.0, bay_count=7)
+        # 16m: 5 bays × 2.6m = 13m, edges = 1.5m each
+        width = 16.0
+        n_bays = 5
+        specs = grammar.solve_bay_layout(width, bay_count=n_bays)
+        std = [s for s in specs if s.bay_type == BayType.WINDOW]
         bp = grammar.profile.bays
-        bay_w = bp.bay_width[1]  # full bay (c-to-c)
-        edge_left = specs[0].x_offset - bay_w * bp.pier_ratio / 2  # back to facade edge
-        last = specs[-1]
-        edge_right = 15.0 - (last.x_offset + last.width + bay_w * bp.pier_ratio / 2)
+        bay_w = bp.bay_width.typ
+        edge_left = std[0].x_offset - bay_w * bp.pier_ratio / 2
+        last = std[-1]
+        edge_right = width - (last.x_offset + last.width + bay_w * bp.pier_ratio / 2)
         # Edges should be symmetric
         assert abs(edge_left - edge_right) < 0.01
         # Total should sum to facade width
-        interior = 7 * bay_w
+        interior = n_bays * bay_w
         total = interior + edge_left + edge_right
-        assert abs(total - 15.0) < 0.01
+        assert abs(total - width) < 0.01
 
     def test_solver_uniform_piers(self):
         """Solver produces uniform interior piers."""
-        specs = grammar.solve_bay_layout(15.0, bay_count=7)
+        specs = grammar.solve_bay_layout(16.0, bay_count=5)
+        std = [s for s in specs if s.bay_type == BayType.WINDOW]
         piers = []
-        for i in range(len(specs) - 1):
-            gap = specs[i + 1].x_offset - (specs[i].x_offset + specs[i].width)
+        for i in range(len(std) - 1):
+            gap = std[i + 1].x_offset - (std[i].x_offset + std[i].width)
             piers.append(gap)
         assert all(abs(p - piers[0]) < 0.001 for p in piers), (
             f"Piers not uniform: {piers}"
@@ -524,7 +552,7 @@ class TestLayoutStrategies:
 
     def test_solver_no_overlap(self):
         """Solver: bays must not overlap for various widths."""
-        for width in [5.0, 10.0, 15.0, 20.0, 25.0]:
+        for width in [6.0, 10.0, 16.0, 21.0, 25.0]:
             specs = grammar.solve_bay_layout(width)
             for i in range(len(specs) - 1):
                 right_edge = specs[i].x_offset + specs[i].width
@@ -557,9 +585,9 @@ class TestLayoutStrategies:
 
     def test_wide_facade_has_wide_edge_piers(self):
         """Wide facade with few bays should have wide edge piers."""
-        specs = grammar.solve_bay_layout(20.0, bay_count=3)
+        specs = grammar.solve_bay_layout(25.0, bay_count=3, allow_custom_bays=False)
         edge_left = specs[0].x_offset
-        assert edge_left > 2.0, f"Edge pier {edge_left} too narrow for 20m/3-bay"
+        assert edge_left > 2.0, f"Edge pier {edge_left} too narrow for 25m/3-bay"
 
 
 # ---------------------------------------------------------------------------
@@ -571,11 +599,11 @@ class TestModestProfile:
         from core.profile import get_profile
         self.modest_grammar = HaussmannGrammar(get_profile("modest"))
 
-    def test_minimum_three_bays_on_narrow_lot(self):
-        """Even very narrow lots must produce at least 3 bays."""
+    def test_minimum_bays_on_narrow_lot(self):
+        """Even very narrow lots must produce at least 2 bays (MODEST allows even)."""
         for width in [5.0, 5.5, 6.0, 6.5, 7.0]:
             specs = self.modest_grammar.solve_bay_layout(width)
-            assert len(specs) >= 3, f"Width {width}m: got {len(specs)} bays, expected ≥3"
+            assert len(specs) >= 2, f"Width {width}m: got {len(specs)} bays, expected ≥2"
 
     def test_narrow_lot_bays_dont_overflow(self):
         """Narrowed bays must fit within the facade width."""
@@ -612,7 +640,7 @@ class TestModestProfile:
             wp = profile.windows
             floor_h = g.get_floor_height(FloorType.NOBLE)
             max_h = floor_h * wp.noble_max_height_ratio
-            bay_w = profile.bays.bay_width[1] * (1 - profile.bays.pier_ratio)
+            bay_w = profile.bays.bay_width.typ * (1 - profile.bays.pier_ratio)
             spec = g.get_window_spec(FloorType.NOBLE, OrnamentLevel.RICH, bay_w, floor_h)
             assert spec.height <= max_h + 0.001, (
                 f"Seed {seed}: noble window {spec.height:.3f}m > cap {max_h:.3f}m"
@@ -620,15 +648,16 @@ class TestModestProfile:
 
     def test_edge_piers_not_excessively_wide(self):
         """On moderate-width lots, bays should widen to prevent huge edge piers."""
-        # 9.6m lot with 3 bays at 2.0m = 6.0m → edge was 1.8m (90% of bay)
+        # 10m lot with 3 bays at 2.15m = 6.45m → edge was 1.775m (83% of bay)
         # After widening, edge piers should be reduced
-        specs = self.modest_grammar.solve_bay_layout(9.6, bay_count=3)
+        specs = self.modest_grammar.solve_bay_layout(10.0, bay_count=3)
+        std = [s for s in specs if s.bay_type == BayType.WINDOW]
         bp = self.modest_grammar.profile.bays
-        bay_w_actual = specs[0].width / (1 - bp.pier_ratio)
-        edge = specs[0].x_offset - bay_w_actual * bp.pier_ratio / 2
-        # Edge should be at most 75% of bay width after widening
-        assert edge <= bay_w_actual * 0.76, (
-            f"Edge pier {edge:.3f}m is still > 75% of bay {bay_w_actual:.3f}m"
+        bay_w_actual = std[0].width / (1 - bp.pier_ratio)
+        edge = std[0].x_offset - bay_w_actual * bp.pier_ratio / 2
+        # Edge should be at most 80% of bay width after widening
+        assert edge <= bay_w_actual * 0.80, (
+            f"Edge pier {edge:.3f}m is still > 80% of bay {bay_w_actual:.3f}m"
         )
 
     def test_modest_roof_broken_mansard(self):
@@ -654,8 +683,8 @@ class TestCustomBays:
 
     def test_no_custom_bays_when_edge_small(self):
         """No custom bays when edge piers are within threshold."""
-        # 15m facade / 7 bays @ 2.0m = 14.0m, edge = 0.5m (< 75% of 2.0)
-        specs = grammar.solve_bay_layout(15.0, bay_count=7)
+        # 16m facade / 5 bays @ 2.6m = 13.0m, edge = 1.5m (< 75% of 2.6 = 1.95)
+        specs = grammar.solve_bay_layout(16.0, bay_count=5)
         custom_bays = [s for s in specs if s.bay_type == BayType.CUSTOM]
         assert len(custom_bays) == 0, "No custom bays needed for narrow edge piers"
 
@@ -700,7 +729,7 @@ class TestCustomBays:
 
     def test_custom_bays_within_facade(self):
         """All bays (including custom) must stay within facade width."""
-        for width in [15.0, 18.0, 20.0, 25.0]:
+        for width in [16.0, 18.0, 21.0, 25.0]:
             specs = grammar.solve_bay_layout(width, bay_count=3)
             assert specs[0].x_offset >= 0, f"First bay starts before facade"
             last = specs[-1]

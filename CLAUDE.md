@@ -86,22 +86,26 @@ haussmann/
 ### Horizontal Rules
 
 - **Bay** = half-pier + window zone + half-pier (centerline-to-centerline)
-- **Interior piers**: 29% of bay width (`pier_ratio`)
-- **Window width**: 65% of window zone (`width_ratio`)
-- **Edge piers**: absorb leftover width; widen bays when edge > 75% of bay width
+- **Interior piers**: ~48–51% of bay width (`pier_ratio`, varies by preset)
+- **Window width**: ~92% of window zone (`width_ratio`)
+- **Edge piers**: absorb leftover width
+- **Custom bays**: when edge pier exceeds threshold, a single narrow custom bay is inserted on one side (asymmetric — placed opposite the door when off-center, random otherwise)
+- **Custom bay styles**: PORTHOLE (oeil-de-boeuf, capped at 0.55m), NARROW_WINDOW, STONEWORK (rusticated panel), GEOMETRIC (diamond relief). Ground/entresol custom bays always render as STONEWORK.
 - **Door bay**: 1.5x wider (GRAND_BOULEVARD + RESIDENTIAL)
 - **Minimum 3 bays** enforced (solver narrows bays rather than dropping below 3)
 
 ### Balcony Rules
 
-- **Noble**: continuous balcony, windows touch balcony (sill=0)
+- **Noble**: continuous balcony spanning bay extent (pier-to-pier, not full facade width), windows touch balcony (sill=0)
 - **3rd/4th**: no balconies
-- **5th**: individual balconettes (GRAND only)
+- **5th**: continuous balcony spanning bay extent (GRAND/RESIDENTIAL); probabilistic for MODEST
+- **MODEST**: probabilistic per-building — noble: 40% none / 30% balconette / 30% continuous; 5th: 50% none / 50% balconette (capped at noble rank)
 
 ### Roof
 
 - **Mansard type**: BROKEN (most common), STEEP (grand), SHALLOW (rear)
 - **Dormers**: 6 styles (PEDIMENT_TRIANGLE, PEDIMENT_CURVED, POINTY_ROOF, OVAL, FLAT_SLOPE, ROUND_SLOPE)
+- **Dormer variety**: GRAND/RESIDENTIAL swap to any of 6 styles per seed; MODEST constrained to FLAT_SLOPE/ROUND_SLOPE
 - **Dormer placement**: EVERY_BAY, EVERY_OTHER, BETWEEN_BAYS, CENTER_ONLY
 - **Chimneys**: edge (party-wall stacks) + ridge (between bays at mansard top)
 - **Modest roofs**: 50/50 short (no dormers) / tall (with dormers)
@@ -114,14 +118,14 @@ All proportions live in `FacadeProfile` (defined in `core/profile.py`). Three bu
 
 | Property | GRAND_BOULEVARD | RESIDENTIAL | MODEST |
 |---|---|---|---|
-| Typical floors | 7 (has entresol) | 6 (has entresol) | 5 (no entresol) |
-| Lot width (min/typ/max) | 13.75/16.0/19.0 | 10.0/12.0/14.5 | 7.0/7.45/10.0 |
-| Bay width | 2.0 m | 2.0 m | 2.0 m |
-| Pier ratio | 0.29 | 0.29 | 0.315 |
-| Window width ratio | 0.65 | 0.65 | 0.55 |
-| Noble bordered aspect | 2.5:1 | 2.5:1 | 1.575:1 |
+| Typical floors | 6–7 (has entresol) | 6–7 (has entresol) | 5–6 (no entresol) |
+| Lot width (RangeParam) | 21.0 ± 3.5 m | 15.0 ± 3.0 m | 10.0 ± 2.0 m |
+| Bay width (RangeParam) | 2.60 ± 0.40 m | 2.30 ± 0.35 m | 2.15 ± 0.45 m |
+| Pier ratio | 0.48 | 0.50 | 0.51 |
+| Window width ratio | 0.92 | 0.92 | 0.92 |
+| Noble bordered aspect | 2.16:1 | 2.12:1 | 2.01:1 |
 | Mansard type | STEEP | BROKEN | BROKEN |
-| Dormer style | PEDIMENT_CURVED | PEDIMENT_TRIANGLE | PEDIMENT_CURVED |
+| Dormer style | PEDIMENT_CURVED | PEDIMENT_TRIANGLE | FLAT_SLOPE |
 
 - `BuildingConfig.profile_name` overrides the style preset's default profile
 - `BuildingConfig.profile_variation` (0.0–1.0) feeds `vary_profile()` for building DNA
@@ -148,6 +152,8 @@ All proportions live in `FacadeProfile` (defined in `core/profile.py`). Three bu
 | `upper_angle` | `float` | Shallow section angle in degrees |
 | `dormer_placement` | `str` | EVERY_BAY, EVERY_OTHER, BETWEEN_BAYS, CENTER_ONLY |
 | `dormer_style` | `DormerStyle` | One of 6 dormer shapes |
+| `has_custom_bays` | `bool` | Force custom edge bays on/off |
+| `custom_bay_style` | `CustomBayStyle` | PORTHOLE, NARROW_WINDOW, STONEWORK, or GEOMETRIC |
 
 ### Design Principles
 
@@ -226,6 +232,15 @@ BuildingNode          # Root
 - [x] Override application in generator (after RNG, before downstream)
 - [x] `dormer_style_override` threaded through roof.py
 - [x] `tests/test_overrides.py` — 6 tests covering on/off, style, identity, determinism
+
+### Phase 6: Custom Bays & Variation -- DONE
+- [x] Asymmetric custom bays (single-sided, opposite door)
+- [x] 4 custom bay styles: PORTHOLE, NARROW_WINDOW, STONEWORK, GEOMETRIC
+- [x] Porthole diameter capped at min(floor_h * 0.25, 0.55m)
+- [x] Ground/entresol custom bays forced to STONEWORK
+- [x] Dormer variety: all 6 styles available for GRAND/RESIDENTIAL
+- [x] Continuous balconies span bay pier-to-pier extent
+- [x] Probabilistic balcony types for MODEST (via BuildingDecisions)
 
 ### Future
 - [ ] Blender backend (`backends/blender/`)

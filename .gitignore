@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 *.egg-info/
+*.svg
+*.png
+output/
+examples/output/

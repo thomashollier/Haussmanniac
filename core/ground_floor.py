@@ -77,7 +77,7 @@ def build_ground_floor(
         if door_bay_index >= 0:
             porte_bay_idx = door_bay_index
         else:
-            porte_bay_idx = variation.pick_porte_cochere_bay(bay_count)
+            porte_bay_idx = variation.pick_porte_cochere_bay(bay_count, grammar)
         ground_node.has_porte_cochere = True
         ground_node.porte_cochere_bay_index = porte_bay_idx
     else:
@@ -218,12 +218,12 @@ def _build_residential_bay(
     # Window width matches upper floors: window zone × width_ratio
     bp = grammar.profile.bays
     wp = grammar.profile.windows
-    std_bay_window_w = bp.bay_width[1] * (1 - bp.pier_ratio)
+    gfp = grammar.profile.ground_floor
+    std_bay_window_w = bp.bay_width.typ * (1 - bp.pier_ratio)
     win_w = std_bay_window_w * wp.width_ratio
     win_w = max(0.5, min(win_w, bay_spec.width - 0.3))
-    # Sill at 1.0m from ground
-    sill_height = 1.0
-    win_h = max(1.0, floor_height * 0.70 - sill_height)
+    sill_height = gfp.residential_sill
+    win_h = max(1.0, floor_height * gfp.residential_height_ratio - sill_height)
 
     # Surround style based on richness
     if style == StylePreset.BOULEVARD:
@@ -411,10 +411,11 @@ def _build_custom_ground_bay(
 
     # Narrow window — same proportions as residential ground floor
     wp = grammar.profile.windows
+    gfp = grammar.profile.ground_floor
     win_w = bay_spec.width * wp.width_ratio
     win_w = max(0.3, min(win_w, bay_spec.width - 0.1))
-    sill_height = 1.0
-    win_h = max(1.0, floor_height * 0.70 - sill_height)
+    sill_height = gfp.residential_sill
+    win_h = max(1.0, floor_height * gfp.residential_height_ratio - sill_height)
 
     window = WindowNode(
         transform=Transform(position=(0.0, sill_height, 0.0)),

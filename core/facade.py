@@ -13,8 +13,10 @@ from .grammar import BaySpec, HaussmannGrammar
 from .ground_floor import build_ground_floor
 from .types import (
     BalconyNode,
+    BalconyType,
     BayNode,
     BayType,
+    BuildingDecisions,
     CorniceNode,
     CustomBayStyle,
     FacadeNode,
@@ -52,6 +54,7 @@ def build_facade(
     ground_floor_type: GroundFloorType = GroundFloorType.COMMERCIAL,
     porte_style: PorteStyle = PorteStyle.ARCHED,
     custom_bay_style: CustomBayStyle | None = None,
+    decisions: BuildingDecisions | None = None,
 ) -> FacadeNode:
     """Compose a complete facade from floor nodes and bay layout.
 
@@ -78,7 +81,7 @@ def build_facade(
 
         door_bay_idx = -1
         if has_porte_cochere and bay_count > 0:
-            door_bay_idx = variation.pick_porte_cochere_bay(bay_count)
+            door_bay_idx = variation.pick_porte_cochere_bay(bay_count, grammar)
 
         bay_layout = grammar.solve_bay_layout(
             facade_width=facade_width,
@@ -106,6 +109,7 @@ def build_facade(
             _populate_upper_floor(
                 floor_node, bay_layout, facade_width, style, variation, grammar,
                 custom_bay_style=custom_bay_style,
+                decisions=decisions,
             )
         facade.children.append(floor_node)
 
@@ -120,8 +124,8 @@ def build_facade(
         width=facade_width,
         profile_id="roofline",
         projection=grammar.get_cornice_projection(is_roofline=True),
-        has_modillions=grammar.has_roofline_modillions(style),
-        has_dentils=grammar.has_roofline_dentils(style),
+        has_modillions=grammar.has_roofline_modillions(),
+        has_dentils=grammar.has_roofline_dentils(),
     )
     facade.children.append(roofline_cornice)
 
@@ -140,16 +144,24 @@ def _populate_upper_floor(
     variation: Variation,
     grammar: HaussmannGrammar,
     custom_bay_style: CustomBayStyle | None = None,
+    decisions: BuildingDecisions | None = None,
 ) -> None:
     """Fill an upper-floor node with window bays, balconies, and ornament."""
     ft = node.floor_type
     ornament = node.ornament_level
-    has_balcony = grammar.has_continuous_balcony(ft)
-    has_balconette = grammar.has_balconette(ft)
+
+    # Balcony type: use decisions when available, else grammar defaults
+    if decisions is not None and ft in decisions.balcony_types:
+        bt = decisions.balcony_types[ft]
+        has_balcony = (bt == BalconyType.CONTINUOUS)
+        has_balconette = (bt == BalconyType.BALCONETTE)
+    else:
+        has_balcony = grammar.has_continuous_balcony(ft)
+        has_balconette = grammar.has_balconette(ft)
 
     # Continuous balcony spans the full facade
     if has_balcony:
-        railing_pattern = variation.vary_railing_pattern(ft)
+        railing_pattern = variation.vary_railing_pattern(ft, grammar)
         balcony = BalconyNode(
             transform=Transform(position=(0.0, 0.0, 0.0)),
             width=facade_width,
@@ -166,7 +178,7 @@ def _populate_upper_floor(
     # Standard bay window width — used for window sizing on all bays so that
     # windows above a wider door bay stay the same size as other windows.
     bp = grammar.profile.bays
-    std_bay_window_w = bp.bay_width[1] * (1 - bp.pier_ratio)
+    std_bay_window_w = bp.bay_width.typ * (1 - bp.pier_ratio)
 
     for bay_spec in bay_layout:
         is_custom = bay_spec.bay_type == BayType.CUSTOM
@@ -180,8 +192,11 @@ def _populate_upper_floor(
         )
 
         if is_custom and custom_bay_style is not None:
-            # Custom bay: porthole, narrow window, or ornament
-            _populate_custom_bay(bay, bay_spec, node, custom_bay_style, grammar)
+            # Ground and entresol custom bays: always stonework (too low for portholes)
+            effective_style = custom_bay_style
+            if ft in (FloorType.GROUND, FloorType.ENTRESOL):
+                effective_style = CustomBayStyle.STONEWORK
+            _populate_custom_bay(bay, bay_spec, node, effective_style, grammar)
         else:
             # Standard window bay
             # Window — use standard bay window width so door bays get normal windows
@@ -212,7 +227,7 @@ def _populate_upper_floor(
                     width=bay_spec.width,
                     depth=grammar.profile.balconies.balconette_depth,
                     is_continuous=False,
-                    railing_pattern=variation.vary_railing_pattern(ft),
+                    railing_pattern=variation.vary_railing_pattern(ft, grammar),
                     railing_height=grammar.get_railing_height(),
                 )
                 bay.children.append(balconette)
@@ -267,8 +282,8 @@ def _populate_custom_bay(
     floor_h = floor_node.height
 
     if custom_style == CustomBayStyle.PORTHOLE:
-        # Circular window: diameter = 40% of floor height, centered
-        diameter = floor_h * 0.40
+        # Circular window: diameter = 25% of floor height, capped at 0.55m
+        diameter = min(floor_h * 0.25, 0.55)
         sill_height = (floor_h - diameter) / 2.0
         window = WindowNode(
             transform=Transform(position=(0.0, sill_height, 0.0)),
@@ -296,11 +311,20 @@ def _populate_custom_bay(
         )
         bay.children.append(window)
 
-    else:  # ORNAMENT
-        # Decorative medallion, centered in bay
+    elif custom_style == CustomBayStyle.STONEWORK:
+        # Rusticated stone panel with coursing, centered in bay
         ornament_node = OrnamentNode(
             transform=Transform(position=(0.0, floor_h * 0.35, 0.0)),
-            ornament_id="medallion",
+            ornament_id="stonework_panel",
+            ornament_level=OrnamentLevel.MODERATE,
+        )
+        bay.children.append(ornament_node)
+
+    else:  # GEOMETRIC
+        # Geometric diamond relief pattern, centered in bay
+        ornament_node = OrnamentNode(
+            transform=Transform(position=(0.0, floor_h * 0.35, 0.0)),
+            ornament_id="geometric_relief",
             ornament_level=OrnamentLevel.MODERATE,
         )
         bay.children.append(ornament_node)

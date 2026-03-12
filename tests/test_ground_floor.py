@@ -2,6 +2,7 @@
 
 from core.grammar import HaussmannGrammar
 from core.ground_floor import build_ground_floor
+from core.profile import get_profile
 from core.types import (
     BayNode,
     BayType,
@@ -19,22 +20,29 @@ from core.variation import Variation
 
 grammar = HaussmannGrammar()
 
+_STYLE_PROFILE = {
+    StylePreset.BOULEVARD: "grand_boulevard",
+    StylePreset.RESIDENTIAL: "residential",
+    StylePreset.MODEST: "modest",
+}
+
 
 def _make_ground_floor(
     style: StylePreset = StylePreset.RESIDENTIAL,
-    facade_width: float = 15.0,
+    facade_width: float = 16.0,
     seed: int = 42,
     has_porte_cochere: bool = True,
 ) -> GroundFloorNode:
+    g = HaussmannGrammar(get_profile(_STYLE_PROFILE.get(style, "residential")))
     variation = Variation(seed=seed, style=style)
-    gf_spec = grammar.get_ground_floor_spec(style, has_porte_cochere)
+    gf_spec = g.get_ground_floor_spec(style, has_porte_cochere)
     node = GroundFloorNode(
         transform=Transform(position=(0.0, 0.0, 0.0)),
         height=gf_spec.height,
     )
-    bay_layout = grammar.get_bay_layout(facade_width, style)
+    bay_layout = g.get_bay_layout(facade_width, style)
     build_ground_floor(
-        node, bay_layout, facade_width, style, variation, grammar,
+        node, bay_layout, facade_width, style, variation, g,
         has_porte_cochere,
     )
     return node

@@ -19,7 +19,7 @@ grammar = HaussmannGrammar()
 
 def _make_roof(
     style: StylePreset = StylePreset.RESIDENTIAL,
-    lot_width: float = 15.0,
+    lot_width: float = 16.0,
     lot_depth: float = 12.0,
     cornice_height: float = 18.0,
     seed: int = 42,
@@ -105,15 +105,16 @@ class TestDormers:
         assert len(dormers) >= 1
 
     def test_boulevard_dormer_per_bay(self):
-        """Boulevard buildings: one dormer per bay."""
-        roof = _make_roof(style=StylePreset.BOULEVARD, lot_width=20.0)
+        """Boulevard buildings: one dormer per standard bay."""
+        # 16m: 5 bays × 2.6m = 13m, edges = 1.5m — no custom bays
+        roof = _make_roof(style=StylePreset.BOULEVARD, lot_width=16.0)
         dormers = [c for c in roof.children if isinstance(c, DormerNode)]
-        bay_count = grammar.compute_bay_count(20.0, StylePreset.BOULEVARD)
+        bay_count = grammar.compute_bay_count(16.0, StylePreset.BOULEVARD)
         assert len(dormers) == bay_count
 
     def test_modest_has_small_dormers(self):
         """Modest mansard: dormers every other bay, slope-style dormers."""
-        roof = _make_roof(style=StylePreset.MODEST, lot_width=15.0)
+        roof = _make_roof(style=StylePreset.MODEST, lot_width=10.0)
         dormers = [c for c in roof.children if isinstance(c, DormerNode)]
         assert len(dormers) >= 1
         for d in dormers:
@@ -121,9 +122,9 @@ class TestDormers:
 
     def test_dormers_centered_in_bays(self):
         """Dormers should be centered horizontally within their bay."""
-        roof = _make_roof()
+        roof = _make_roof(lot_width=16.0)
         dormers = [c for c in roof.children if isinstance(c, DormerNode)]
-        bay_layout = grammar.get_bay_layout(15.0, StylePreset.RESIDENTIAL)
+        bay_layout = grammar.get_bay_layout(16.0, StylePreset.RESIDENTIAL)
         for dormer, bay in zip(dormers, bay_layout):
             expected_x = bay.x_offset + bay.width / 2
             assert abs(dormer.transform.position[0] - expected_x) < 0.01
@@ -151,11 +152,11 @@ class TestChimneys:
 
     def test_chimneys_on_party_walls(self):
         """Chimneys should cluster near the left and right lot edges (party walls)."""
-        roof = _make_roof(lot_width=20.0)
+        roof = _make_roof(lot_width=21.0)
         chimneys = [c for c in roof.children if isinstance(c, ChimneyNode)]
         xs = [c.transform.position[0] for c in chimneys]
         # All chimneys should be near the edges, not in the middle
-        mid = 20.0 / 2
+        mid = 21.0 / 2
         for x in xs:
             assert abs(x - mid) > mid * 0.5, (
                 f"Chimney at x={x:.1f} is too close to center ({mid})"
@@ -163,7 +164,7 @@ class TestChimneys:
 
     def test_chimneys_within_footprint(self):
         """All chimneys should be within the building footprint."""
-        width = 15.0
+        width = 16.0
         depth = 12.0
         roof = _make_roof(lot_width=width, lot_depth=depth)
         chimneys = [c for c in roof.children if isinstance(c, ChimneyNode)]

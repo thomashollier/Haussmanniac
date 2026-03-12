@@ -114,7 +114,15 @@ class CustomBayStyle(Enum):
     """Window treatment for narrow custom bays at facade edges."""
     PORTHOLE = auto()       # Circular window (oeil-de-boeuf)
     NARROW_WINDOW = auto()  # Tall narrow rectangular window
-    ORNAMENT = auto()       # Decorative panel/medallion, no window
+    STONEWORK = auto()      # Rusticated stone panel with coursing
+    GEOMETRIC = auto()      # Geometric diamond relief pattern
+
+
+class BalconyType(Enum):
+    """Per-floor balcony treatment, ordered by prominence."""
+    NONE = "none"
+    BALCONETTE = "balconette"
+    CONTINUOUS = "continuous"
 
 
 class StylePreset(Enum):
@@ -358,6 +366,21 @@ class BuildingNode(IRNode):
 
 
 # ---------------------------------------------------------------------------
+# Building decisions (accumulated per-building choices)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BuildingDecisions:
+    """Accumulated per-building choices from the generation pipeline.
+
+    Each generation step reads prior decisions and writes its own.
+    Passed through the entire pipeline so downstream steps can
+    reference any earlier choice.
+    """
+    balcony_types: dict[FloorType, BalconyType] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Building overrides (optional per-field overrides for seeded output)
 # ---------------------------------------------------------------------------
 
@@ -393,7 +416,7 @@ class BuildingConfig:
     """User-facing configuration for building generation."""
     lot_width: Optional[float] = None   # None = use profile's typical_lot_width
     lot_depth: Optional[float] = None   # None = use profile's typical_lot_depth
-    num_floors: Optional[int] = None    # None = use profile's typical_num_floors
+    num_floors: Optional[int] = None    # None = derive from gabarit (street_width)
     style_preset: str = "RESIDENTIAL"   # Resolved to StylePreset enum
     seed: int = 42
     has_entresol: Optional[bool] = None  # None = use profile's has_entresol
@@ -402,4 +425,5 @@ class BuildingConfig:
     ground_floor_type: str = "AUTO"     # Resolved to GroundFloorType enum
     profile_name: Optional[str] = None  # Override style_preset's default profile
     profile_variation: float = 0.0      # 0.0 = exact, 0.0-1.0 = variation amount
+    street_width: Optional[float] = None  # Street width in metres; determines gabarit
     overrides: BuildingOverrides | None = None  # Per-field overrides for seeded output

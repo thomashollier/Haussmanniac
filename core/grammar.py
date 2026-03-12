@@ -18,7 +18,7 @@ import random
 from dataclasses import dataclass
 from typing import Optional
 
-from .profile import FacadeProfile, GRAND_BOULEVARD
+from .profile import FacadeProfile, GRAND_BOULEVARD, RangeParam
 from .types import (
     BayType,
     DormerStyle,
@@ -108,27 +108,27 @@ _FLOOR_ATTR: dict[FloorType, str] = {
     FloorType.MANSARD:  "mansard",
 }
 
-# ---------------------------------------------------------------------------
-# Non-profile constants (style-level, not proportional)
-# ---------------------------------------------------------------------------
+# Note: middle floor step and chamfer width live in FacadeProfile
+# (bays.middle_floor_step, chamfer_width) and are read via self.profile.
 
-# Cornice height targets by style (the regulated wall height *below* the
-# mansard).  The mansard attic sits above this line and is not counted.
-# Based on the 1859/1882/1902 décrets préfectoraux tying max cornice
-# height to street width.
-_CORNICE_TARGET: dict[StylePreset, float] = {
-    StylePreset.BOULEVARD:   18.0,   # Wide boulevard (20m+ street)
-    StylePreset.RESIDENTIAL: 15.5,   # Medium street (~15m)
-    StylePreset.MODEST:      12.0,   # Narrow street (~12m)
-}
 
-# Step-down ratio between consecutive middle floors (3rd → 4th → 5th).
-# Each floor is ~93% of the one below it, creating the characteristic
-# Haussmann taper.
-_MIDDLE_FLOOR_STEP = 0.93
+def compute_gabarit(street_width: float) -> float:
+    """Max stone facade height (cornice line) from street width.
 
-# Corner chamfer (pan coupé)
-_CHAMFER_WIDTH = 3.0                 # metres — standard 45° cut
+    Step-wise per the 1859/1882 règlement de voirie:
+    - street > 20m  → 20.0m facade
+    - street ≥ 9.75m → 17.55m facade
+    - street ≥ 7.8m  → 14.6m facade
+    - street < 7.8m  → 11.7m facade
+    """
+    if street_width > 20.0:
+        return 20.0
+    elif street_width >= 9.75:
+        return 17.55
+    elif street_width >= 7.8:
+        return 14.6
+    else:
+        return 11.7
 
 
 # ---------------------------------------------------------------------------
@@ -190,16 +190,19 @@ class HaussmannGrammar:
         seq.append(FloorType.MANSARD)
         return seq
 
+    def get_floor_range(self, floor_type: FloorType) -> RangeParam:
+        """Return the RangeParam for *floor_type*."""
+        attr = _FLOOR_ATTR[floor_type]
+        return getattr(self.profile.floors, attr)
+
     def get_floor_height(self, floor_type: FloorType) -> float:
         """Return the typical floor-to-floor height for *floor_type*."""
-        attr = _FLOOR_ATTR[floor_type]
-        return getattr(self.profile.floors, attr)[1]  # [1] = typical
+        return self.get_floor_range(floor_type).typ
 
     def get_floor_height_range(self, floor_type: FloorType) -> tuple[float, float]:
         """Return (min, max) height for *floor_type*."""
-        attr = _FLOOR_ATTR[floor_type]
-        mn, _, mx = getattr(self.profile.floors, attr)
-        return (mn, mx)
+        rp = self.get_floor_range(floor_type)
+        return (rp.min, rp.max)
 
     def get_floor_specs(
         self,
@@ -221,11 +224,6 @@ class HaussmannGrammar:
 
     # -- Cornice budget --------------------------------------------------------
 
-    @staticmethod
-    def get_cornice_target(style: StylePreset) -> float:
-        """Target cornice height (wall top, below mansard) for a style preset."""
-        return _CORNICE_TARGET[style]
-
     def compute_middle_floor_heights(
         self,
         remaining_budget: float,
@@ -244,7 +242,7 @@ class HaussmannGrammar:
         if middle_count <= 0:
             return []
 
-        r = _MIDDLE_FLOOR_STEP
+        r = self.profile.bays.middle_floor_step
         geo_sum = sum(r ** i for i in range(middle_count))
         h_first = remaining_budget / geo_sum
 
@@ -265,28 +263,25 @@ class HaussmannGrammar:
 
     def max_feasible_bays(self, facade_width: float) -> int:
         """Maximum number of bays that fit using minimum bay width."""
-        bay_min = self.profile.bays.bay_width[0]
+        bay_min = self.profile.bays.bay_width.min
         return max(1, int(facade_width / bay_min))
 
     def compute_bay_count(self, facade_width: float, style: StylePreset = StylePreset.RESIDENTIAL) -> int:
         """Determine the typical number of bays from facade width.
 
-        Bay count follows historical Parisian parcel structure, always odd
-        (central bay is the organizing spine of the facade):
-        - < threshold_5:  3 bays (narrow — minimum Haussmann program)
-        - < threshold_7:  5 bays (typical ~15m investment frontage)
-        - < threshold_9:  7 bays (grand boulevard / consolidated lots)
-        - >= threshold_9: 9 bays (exceptional / institutional)
+        Bay count is derived from the facade width, typical bay width,
+        and minimum edge pier (trumeau de rive).  The result is always
+        odd unless ``allow_even_bays`` is set on the profile.
         """
-        thresholds = self.profile.bays
-        if facade_width < thresholds.threshold_5_bays:
-            return 3
-        elif facade_width < thresholds.threshold_7_bays:
-            return 5
-        elif facade_width < thresholds.threshold_9_bays:
-            return 7
-        else:
-            return 9
+        bp = self.profile.bays
+        bay_w = bp.bay_width.typ
+        min_edge = bp.minimum_edge_pier
+        max_bays = int((facade_width - 2 * min_edge) / bay_w)
+        max_bays = max(2, max_bays)
+        if not bp.allow_even_bays and max_bays % 2 == 0:
+            max_bays -= 1
+        min_bays = 2 if bp.allow_even_bays else 3
+        return max(min_bays, max_bays)
 
     def compute_edge_pier(self, facade_width: float, bay_count: int) -> float:
         """Compute edge pier width for a given facade width and bay count.
@@ -295,7 +290,7 @@ class HaussmannGrammar:
         It includes a half bay-pier on the inner side plus any remaining
         wall width.
         """
-        bay_w = self.profile.bays.bay_width[1]
+        bay_w = self.profile.bays.bay_width.typ
         return max(0.0, (facade_width - bay_count * bay_w) / 2.0)
 
     def smart_bay_count(
@@ -304,16 +299,17 @@ class HaussmannGrammar:
         desired: int,
         style: StylePreset = StylePreset.RESIDENTIAL,
     ) -> int:
-        """Ensure edge piers are at least 0.5 m.  Reduces count if too narrow."""
-        bay_w = self.profile.bays.bay_width[1]
-        min_edge = 0.5
+        """Ensure edge piers are at least minimum_edge_pier.  Reduces count if too narrow."""
+        bay_w = self.profile.bays.bay_width.typ
+        min_edge = self.profile.bays.minimum_edge_pier
 
         for count in range(desired, 0, -1):
             edge = (facade_width - count * bay_w) / 2.0
             if edge >= min_edge:
                 return count
 
-        return 3  # safe fallback
+        min_bays = 2 if self.profile.bays.allow_even_bays else 3
+        return min_bays  # safe fallback
 
     def get_bay_layout(
         self,
@@ -344,6 +340,7 @@ class HaussmannGrammar:
         door_bay_index: int = -1,
         rng: random.Random | None = None,
         allow_custom_bays: bool = True,
+        custom_bay_side: int = -1,
     ) -> list[BaySpec]:
         """Fit bays into *facade_width*.
 
@@ -368,10 +365,10 @@ class HaussmannGrammar:
 
         if bay_count is None:
             bay_count = self.compute_bay_count(facade_width)
-        if bay_count % 2 == 0:
+        if bay_count % 2 == 0 and not self.profile.bays.allow_even_bays:
             bay_count += 1
 
-        bay_w = bp.bay_width[1]       # full bay: half bay-pier + bay window + half bay-pier
+        bay_w = bp.bay_width.typ       # full bay: half bay-pier + bay window + half bay-pier
         bay_pier_w = bay_w * bp.pier_ratio
         half_pier = bay_pier_w / 2.0
         bay_window_w = bay_w - bay_pier_w
@@ -391,9 +388,10 @@ class HaussmannGrammar:
         if use_door:
             door_bay_index = min(door_bay_index, bay_count - 1)
 
-        # Reduce bay count if edge piers too narrow (never below 3)
+        # Reduce bay count if edge piers too narrow
+        min_bays = 2 if bp.allow_even_bays else 3
         min_edge = 0.1
-        while bay_count > 3:
+        while bay_count > min_bays:
             interior = _interior(bay_count, door_bay_index)
             edge = (facade_width - interior) / 2.0
             if edge >= min_edge:
@@ -403,16 +401,16 @@ class HaussmannGrammar:
             if use_door:
                 door_bay_index = min(door_bay_index, bay_count - 1)
 
-        # If 3 bays still don't fit, narrow bays to fit with minimum edge piers
-        if bay_count == 3:
-            interior = _interior(3, door_bay_index)
+        # If minimum bays still don't fit, narrow bays to fit with minimum edge piers
+        if bay_count == min_bays:
+            interior = _interior(min_bays, door_bay_index)
             edge = (facade_width - interior) / 2.0
             if edge < min_edge:
                 available = facade_width - 2 * min_edge
-                if use_door and 0 <= door_bay_index < 3:
-                    bay_w = available / (2 + bp.door_bay_width_ratio)
+                if use_door and 0 <= door_bay_index < min_bays:
+                    bay_w = available / (min_bays - 1 + bp.door_bay_width_ratio)
                 else:
-                    bay_w = available / 3
+                    bay_w = available / min_bays
                 bay_pier_w = bay_w * bp.pier_ratio
                 half_pier = bay_pier_w / 2.0
                 bay_window_w = bay_w - bay_pier_w
@@ -435,7 +433,7 @@ class HaussmannGrammar:
             else:
                 adj_bay_w = target_interior / bay_count
             # Only widen, never narrow below current, cap at profile max
-            adj_bay_w = min(adj_bay_w, bp.bay_width[2])
+            adj_bay_w = min(adj_bay_w, bp.bay_width.max)
             if adj_bay_w > bay_w:
                 bay_w = adj_bay_w
                 bay_pier_w = bay_w * bp.pier_ratio
@@ -465,18 +463,14 @@ class HaussmannGrammar:
                 custom_pier_w = custom_bay_w * bp.custom_pier_ratio
                 custom_window_w = custom_bay_w - custom_pier_w
 
-                # Try inserting on both sides first
-                new_edge = (facade_width - interior - 2 * custom_bay_w) / 2.0
-                if new_edge >= 0.1:
-                    insert_custom_left = True
-                    insert_custom_right = True
-                    edge = new_edge
-                else:
-                    # Only one custom bay (on the wider side)
-                    new_edge_one = (facade_width - interior - custom_bay_w) / 2.0
-                    if new_edge_one >= 0.1:
+                # Always single-sided — use custom_bay_side preference
+                new_edge_one = (facade_width - interior - custom_bay_w) / 2.0
+                if new_edge_one >= 0.1:
+                    if custom_bay_side == 1:
+                        insert_custom_right = True
+                    else:
                         insert_custom_left = True
-                        edge = new_edge_one
+                    edge = new_edge_one
 
         # Build specs with cumulative x positioning
         specs: list[BaySpec] = []
@@ -664,19 +658,16 @@ class HaussmannGrammar:
             mansard_type = MansardType.BROKEN
 
         if mansard_type == MansardType.STEEP:
-            lower_angle = rp.lower_angle_deg   # Near-vertical
-            upper_angle = 15.0                 # Nearly flat cap (barely visible)
+            lower_angle = rp.lower_angle_deg
+            upper_angle = rp.steep_upper_angle_deg
             break_pct = 1.0                    # No break — single steep face
         elif mansard_type == MansardType.BROKEN:
-            lower_angle = 70.0                 # Very steep lower section
-            upper_angle = rp.upper_angle_deg   # Flatter upper section
-            break_pct = 0.85                   # Break at 85% of total height
-            if style == StylePreset.MODEST:
-                lower_angle = 80.0             # Near-vertical for modest
-                break_pct = 0.95               # Break at 95% of total height
+            lower_angle = rp.broken_lower_angle_deg
+            upper_angle = rp.upper_angle_deg
+            break_pct = rp.broken_break_pct
         else:  # SHALLOW
-            lower_angle = 65.0     # 25° from vertical
-            upper_angle = 65.0     # Same angle (no break)
+            lower_angle = rp.shallow_angle_deg
+            upper_angle = rp.shallow_angle_deg
             break_pct = 1.0
 
         # -- Dormers -------------------------------------------------------
@@ -717,15 +708,11 @@ class HaussmannGrammar:
     ) -> GroundFloorSpec:
         """Ground-floor proportions: commercial openings and carriage entrance."""
         height = self.get_floor_height(FloorType.GROUND)
+        gfp = self.profile.ground_floor
 
-        # Shopfront opening ≈ 75% of ground floor height
-        shopfront_h = round(height * 0.75, 2)
-
-        # Porte-cochère width: ~2.5-3.0 m (enough for a carriage / car)
-        porte_w = 2.8 if has_porte_cochere else 0.0
-
-        # Rustication on all but the most modest buildings
-        has_rust = style != StylePreset.MODEST
+        shopfront_h = round(height * gfp.shopfront_height_ratio, 2)
+        porte_w = gfp.porte_cochere_width if has_porte_cochere else 0.0
+        has_rust = self.profile.has_rustication
 
         return GroundFloorSpec(
             height=height,
@@ -736,28 +723,25 @@ class HaussmannGrammar:
 
     # -- Cornice rules ---------------------------------------------------------
 
-    @staticmethod
-    def get_cornice_projection(is_roofline: bool = False) -> float:
+    def get_cornice_projection(self, is_roofline: bool = False) -> float:
         """How far a cornice projects from the wall face.
 
         The roofline cornice is heavier (~0.4 m); inter-floor cornices
         are lighter (~0.12 m).
         """
-        return 0.40 if is_roofline else 0.12
+        cp = self.profile.cornice
+        return cp.roofline_projection if is_roofline else cp.interfloor_projection
 
-    @staticmethod
-    def has_roofline_modillions(style: StylePreset) -> bool:
+    def has_roofline_modillions(self) -> bool:
         """Modillions (bracket-like ornaments) under the main cornice."""
-        return style == StylePreset.BOULEVARD
+        return self.profile.cornice.has_modillions
 
-    @staticmethod
-    def has_roofline_dentils(style: StylePreset) -> bool:
+    def has_roofline_dentils(self) -> bool:
         """Dentil molding under the main cornice."""
-        return style in (StylePreset.BOULEVARD, StylePreset.RESIDENTIAL)
+        return self.profile.cornice.has_dentils
 
     # -- Corner chamfer --------------------------------------------------------
 
-    @staticmethod
-    def get_chamfer_width() -> float:
+    def get_chamfer_width(self) -> float:
         """Standard pan coupé width at street intersections."""
-        return _CHAMFER_WIDTH
+        return self.profile.chamfer_width

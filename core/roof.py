@@ -53,6 +53,8 @@ def build_roof(
     upper_angle_deg: float = 0.0,
     dormer_placement: str = "",
     dormer_style_override: DormerStyle | None = None,
+    dormer_style: DormerStyle | None = None,
+    chimney_count: int | None = None,
 ) -> RoofNode:
     """Assemble the complete mansard roof from building parameters.
 
@@ -105,6 +107,7 @@ def build_roof(
             bay_layout=bay_layout,
             dormer_placement=dormer_placement,
             dormer_style_override=dormer_style_override,
+            dormer_style=dormer_style,
         )
         roof.children.extend(dormers)
 
@@ -112,6 +115,7 @@ def build_roof(
     chimneys = _build_chimneys(
         lot_width, lot_depth, variation, grammar, bay_count, roof_spec,
         door_bay_index=door_bay_index,
+        chimney_count=chimney_count,
     )
     roof.children.extend(chimneys)
 
@@ -200,6 +204,7 @@ def _build_dormers(
     bay_layout: list[BaySpec] | None = None,
     dormer_placement: str = "",
     dormer_style_override: DormerStyle | None = None,
+    dormer_style: DormerStyle | None = None,
 ) -> list[DormerNode]:
     """Place dormers on the front mansard slope.
 
@@ -220,34 +225,44 @@ def _build_dormers(
     """
     if bay_layout is None:
         bay_layout = grammar.get_bay_layout(lot_width, style)
-    dormer_style = variation.vary_dormer_style(grammar, bay_count)
+    if dormer_style is None:
+        dormer_style = variation.vary_dormer_style(grammar, bay_count)
     if dormer_style_override is not None:
         dormer_style = dormer_style_override
 
     mansard_type = roof_spec.mansard_type
     lower_angle_rad = math.radians(roof_spec.mansard_lower_angle_deg)
 
-    # Dormer vertical position within the steep zone
+    # Dormer vertical bounds within the steep zone
     if mansard_type == MansardType.STEEP:
-        dormer_y = roof_spec.mansard_height * 0.15
         max_dormer_h = roof_spec.mansard_height * 0.6
     elif mansard_type == MansardType.BROKEN:
         break_h = roof_spec.mansard_height * roof_spec.break_pct
-        dormer_y = break_h * 0.10
         max_dormer_h = break_h * 0.75
     else:
         return []  # No dormers on shallow
 
     dormer_h = min(grammar.profile.roof.dormer_max_height, max_dormer_h)
 
-    # Horizontal inset at dormer base: how far in the slope edge is at dormer_y
-    inset_at_dormer = dormer_y / math.tan(lower_angle_rad) if lower_angle_rad else 0.0
-
     # Dormer width matches the window width on upper floors
     bp = grammar.profile.bays
     wp = grammar.profile.windows
-    std_bay_window_w = bp.bay_width[1] * (1 - bp.pier_ratio)
+    std_bay_window_w = bp.bay_width.typ * (1 - bp.pier_ratio)
     win_w = std_bay_window_w * wp.width_ratio
+
+    # FLAT_SLOPE: narrower and taller for vertical window aspect > 1.4
+    if dormer_style == DormerStyle.FLAT_SLOPE:
+        win_w *= 0.70
+        dormer_h = min(max_dormer_h, dormer_h * 1.35)
+
+    # Dormer vertical position within the steep zone
+    if mansard_type == MansardType.STEEP:
+        dormer_y = roof_spec.mansard_height * 0.15
+    else:  # BROKEN — position so dormer top reaches ~72% of break height
+        dormer_y = max(break_h * 0.10, break_h * 0.72 - dormer_h)
+
+    # Horizontal inset at dormer base: how far in the slope edge is at dormer_y
+    inset_at_dormer = dormer_y / math.tan(lower_angle_rad) if lower_angle_rad else 0.0
 
     # Compute dormer x-positions based on placement rule
     x_positions: list[float] = []
@@ -304,6 +319,7 @@ def _build_chimneys(
     bay_count: int,
     roof_spec,
     door_bay_index: int = -1,
+    chimney_count: int | None = None,
 ) -> list[ChimneyNode]:
     """Place chimney stacks on party walls (left and right lot edges).
 
@@ -315,7 +331,10 @@ def _build_chimneys(
     When the door is on a side bay, chimneys cluster on the opposite wall
     (typical of modest Parisian buildings).
     """
-    total_chimney_count = variation.vary_chimney_count(grammar, bay_count)
+    if chimney_count is not None:
+        total_chimney_count = chimney_count
+    else:
+        total_chimney_count = variation.vary_chimney_count(grammar, bay_count)
     base_height = roof_spec.chimney_height
 
     chimneys: list[ChimneyNode] = []
