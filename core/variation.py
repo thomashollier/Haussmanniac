@@ -212,29 +212,33 @@ class Variation:
 
         Returns ``(height, has_dormers, break_ratio, lower_angle_deg, upper_angle_deg)``.
 
-        For profiles with mansard_height_short > 0 (e.g. modest):
-        mansard_short_probability → short roof (no dormers), else tall.
-        Break ratio, lower/upper angle ranges from variation params.
-        Other styles: returns zeros (no override).
+        Always samples break ratio, lower/upper angles, and mansard height
+        (5 RNG calls for sequence stability).  When mansard_height_short > 0
+        (e.g. modest), the short/tall coin flip determines dormers and which
+        height base to use.
         """
         rp = grammar.profile.roof
         vp = grammar.profile.variation
         jitter = rp.mansard_height_jitter
-        if rp.mansard_height_short > 0:
-            break_ratio = round(self.sample_range(vp.break_ratio), 3)
-            lower_angle = round(self.sample_range(vp.lower_angle), 1)
-            upper_angle = round(self.sample_range(vp.upper_angle), 1)
-            if self.rng.random() < vp.mansard_short_probability:
-                # Short roof — no dormers
-                h = self.rng.uniform(rp.mansard_height_short * (1 - jitter),
-                                     rp.mansard_height_short * (1 + jitter))
-                return (round(h, 3), False, break_ratio, lower_angle, upper_angle)
-            else:
-                # Tall roof — dormers
-                h = self.rng.uniform(rp.mansard_height * (1 - jitter),
-                                     rp.mansard_height * (1 + jitter))
-                return (round(h, 3), True, break_ratio, lower_angle, upper_angle)
-        return (rp.mansard_height, True, 0.0, 0.0, 0.0)
+
+        # Always sample these (3 RNG calls)
+        break_ratio = round(self.sample_range(vp.break_ratio), 3)
+        lower_angle = round(min(self.sample_range(vp.lower_angle), 88.0), 1)
+        upper_angle = round(self.sample_range(vp.upper_angle), 1)
+
+        # Short/tall coin flip (1 RNG call — consumed even when short=0)
+        short_roll = self.rng.random()
+
+        # Mansard height with jitter (1 RNG call)
+        if rp.mansard_height_short > 0 and short_roll < vp.mansard_short_probability:
+            base_h = rp.mansard_height_short
+            has_dormers = False
+        else:
+            base_h = rp.mansard_height
+            has_dormers = True
+        h = self.rng.uniform(base_h * (1 - jitter), base_h * (1 + jitter))
+
+        return (round(h, 3), has_dormers, break_ratio, lower_angle, upper_angle)
 
     # -- Dormer placement ------------------------------------------------------
 

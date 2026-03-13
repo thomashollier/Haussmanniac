@@ -83,6 +83,7 @@ COLORS = {
     "signage_band": "#D0C4AE",   # Signage area above shopfront
     "pier": "#DDD4C4",           # Interior pier fill
     "pier_edge": "#DDD4C4",     # Edge pier fill — same as interior piers
+    "custom_bay_wall": "#D6CCB8",  # Slightly darker/warmer tint for custom bay background
     "pier_line": "#C0B4A0",     # Pier outline
     "sky": "#D6E8F0",
     "ground": "#8A9A7A",
@@ -371,6 +372,9 @@ def _draw_ground_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: flo
     """Draw a single ground-floor bay (shopfront, door, or residential window)."""
     # Custom ground bay: draw as narrow residential window
     if bay.bay_type == BayType.CUSTOM:
+        # Tinted background for custom ground bays
+        ctx.rect(bay.x_offset, floor_y, bay.width, floor_h,
+                 COLORS["custom_bay_wall"], stroke_w=0)
         for child in bay.children:
             if isinstance(child, WindowNode):
                 win_x = bay.x_offset + (bay.width - child.width) / 2
@@ -536,6 +540,9 @@ def _draw_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: floa
 
 def _draw_custom_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: float):
     """Draw a custom bay: porthole, narrow window, or ornament medallion."""
+    # Tinted background so custom bays are visually distinct
+    ctx.rect(bay.x_offset, floor_y, bay.width, floor_h,
+             COLORS["custom_bay_wall"], stroke_w=0)
     style = bay.custom_bay_style
 
     if style == CustomBayStyle.PORTHOLE:

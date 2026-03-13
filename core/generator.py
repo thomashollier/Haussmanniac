@@ -160,6 +160,11 @@ def generate_building(
     # -- Custom bay side (always consume 1 RNG call) -------------------------
     custom_bay_side = v_layout.vary_custom_bay_side(door_bay_idx, front_bay_count)
 
+    # -- Door bay width ratio (sample per-building, write into profile) --------
+    door_ratio = v_layout.sample_range(grammar.profile.variation.door_bay_width_ratio)
+    door_ratio = round(max(1.0, door_ratio), 3)  # clamp: never narrower than regular
+    grammar.profile.bays.door_bay_width_ratio = door_ratio
+
     # -- Solve bay layout with custom_bay_side ---------------------------------
     front_bay_layout = grammar.solve_bay_layout(
         facade_width=lot_width,

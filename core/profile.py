@@ -87,7 +87,7 @@ class BayProportions:
     """
     bay_width: RangeParam = field(default_factory=lambda: RangeParam(2.60, 0.40, 0.5))
     pier_ratio: float = 0.48           # bay pier width as fraction of bay width
-    door_bay_width_ratio: float = 1.0  # door bay width as multiple of standard bay width
+    door_bay_width_ratio: float = 1.0  # door bay width as multiple of standard bay width (resolved per-building from variation)
     minimum_edge_pier: float = 1.30    # minimum edge buffer (trumeau de rive) in metres
     allow_even_bays: bool = False       # whether even bay counts (2, 4) are allowed
     # Custom bay parameters (narrow edge bays absorbing excess width)
@@ -189,8 +189,8 @@ class VariationParams:
     # Mansard
     mansard_short_probability: float = 0.0  # probability of short roof (0 = always tall)
     break_ratio: RangeParam = field(default_factory=lambda: RangeParam(0.825, 0.125, 1.5))
-    lower_angle: RangeParam = field(default_factory=lambda: RangeParam(77.5, 7.5, 1.5))
-    upper_angle: RangeParam = field(default_factory=lambda: RangeParam(24.0, 21.0, 1.5))
+    lower_angle: RangeParam = field(default_factory=lambda: RangeParam(83.0, 5.0, 0.5))
+    upper_angle: RangeParam = field(default_factory=lambda: RangeParam(45.0, 10.0, 0.5))
     # Dormers
     dormer_between_bays_pct: float = 0.50
     dormer_every_bay_pct: float = 0.17
@@ -208,7 +208,8 @@ class VariationParams:
     noble_balcony_balconette_pct: float = 0.0  # Noble floor: probability of balconette
     fifth_balcony_none_pct: float = 0.0     # Fifth floor: probability of no balcony
     fifth_balcony_balconette_pct: float = 0.0  # Fifth floor: probability of balconette
-
+    # Door bay width ratio (sampled per-building, written into BayProportions before solving)
+    door_bay_width_ratio: RangeParam = field(default_factory=lambda: RangeParam(1.5, 0.5, 0.5))
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +273,7 @@ GRAND_BOULEVARD = FacadeProfile(
         porte_center_probability=0.80,
         dormer_style_swap_pct=0.20,
         entresol_include_pct=0.85,
+        door_bay_width_ratio=RangeParam(1.5, 0.5, 0.5),
     ),
 )
 
@@ -316,6 +318,7 @@ RESIDENTIAL = FacadeProfile(
         ground_floor_mixed_pct=0.30,
         porte_center_probability=0.80,
         dormer_style_swap_pct=0.20,
+        door_bay_width_ratio=RangeParam(1.5, 0.5, 0.5),
     ),
 )
 
@@ -383,6 +386,7 @@ MODEST = FacadeProfile(
         noble_balcony_balconette_pct=0.30,
         fifth_balcony_none_pct=0.50,
         fifth_balcony_balconette_pct=0.50,
+        door_bay_width_ratio=RangeParam(1.15, 0.15, 0.5),
     ),
 )
 
@@ -593,6 +597,7 @@ def _build_profile_from_raw(
             noble_balcony_balconette_pct=float(_get("variation", "noble_balcony_balconette_pct", 0.0)),
             fifth_balcony_none_pct=float(_get("variation", "fifth_balcony_none_pct", 0.0)),
             fifth_balcony_balconette_pct=float(_get("variation", "fifth_balcony_balconette_pct", 0.0)),
+            door_bay_width_ratio=_get_range("variation", "door_bay_width_ratio", 0.5),
         ),
     )
 

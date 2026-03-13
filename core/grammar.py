@@ -389,8 +389,9 @@ class HaussmannGrammar:
             door_bay_index = min(door_bay_index, bay_count - 1)
 
         # Reduce bay count if edge piers too narrow
+        # Edge pier must be at least half a bay pier (same visual gap as between windows)
         min_bays = 2 if bp.allow_even_bays else 3
-        min_edge = 0.1
+        min_edge = half_pier
         while bay_count > min_bays:
             interior = _interior(bay_count, door_bay_index)
             edge = (facade_width - interior) / 2.0
@@ -401,18 +402,21 @@ class HaussmannGrammar:
             if use_door:
                 door_bay_index = min(door_bay_index, bay_count - 1)
 
-        # If minimum bays still don't fit, narrow bays to fit with minimum edge piers
+        # If minimum bays still don't fit, narrow bays so edge piers >= half bay pier.
+        # Solve: facade_width = n_bays * bay_w + 2 * edge, edge = half_pier = bay_w * pier_ratio / 2
+        # => facade_width = bay_w * (n_effective + pier_ratio)
         if bay_count == min_bays:
             interior = _interior(min_bays, door_bay_index)
             edge = (facade_width - interior) / 2.0
             if edge < min_edge:
-                available = facade_width - 2 * min_edge
                 if use_door and 0 <= door_bay_index < min_bays:
-                    bay_w = available / (min_bays - 1 + bp.door_bay_width_ratio)
+                    n_effective = (min_bays - 1) + bp.door_bay_width_ratio
                 else:
-                    bay_w = available / min_bays
+                    n_effective = min_bays
+                bay_w = facade_width / (n_effective + bp.pier_ratio)
                 bay_pier_w = bay_w * bp.pier_ratio
                 half_pier = bay_pier_w / 2.0
+                min_edge = half_pier
                 bay_window_w = bay_w - bay_pier_w
                 door_bay_w = bay_w * bp.door_bay_width_ratio if use_door else bay_w
                 door_window_w = door_bay_w - bay_pier_w if use_door else bay_window_w
