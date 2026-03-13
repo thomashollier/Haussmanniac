@@ -326,10 +326,8 @@ def _populate_custom_bay(
         bay.children.append(window)
 
     elif custom_style == CustomBayStyle.STONEWORK:
-        # Rusticated stone panel — margin matches window-to-bay-edge gap
-        # In a custom bay: half-pier = bay_w * custom_pier_ratio / 2
-        bp = grammar.profile.bays
-        margin = bay_spec.width * bp.custom_pier_ratio / 2
+        # Rusticated stone panel — margin matches inter-floor string course band
+        margin = 0.15  # slightly above 0.12 band to account for stroke lines
         # Encode margin in transform z so SVG can read it
         ornament_node = OrnamentNode(
             transform=Transform(position=(0.0, margin, margin)),

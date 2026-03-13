@@ -372,14 +372,8 @@ def _draw_ground_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: flo
     """Draw a single ground-floor bay (shopfront, door, or residential window)."""
     # Custom ground bay: draw as narrow residential window
     if bay.bay_type == BayType.CUSTOM:
-        # Tinted background for custom ground bays
-        ctx.rect(bay.x_offset, floor_y, bay.width, floor_h,
-                 COLORS["custom_bay_wall"], stroke_w=0)
-        for child in bay.children:
-            if isinstance(child, WindowNode):
-                win_x = bay.x_offset + (bay.width - child.width) / 2
-                win_y = floor_y + child.transform.position[1]
-                _draw_window(ctx, child, win_x, win_y, bay.width)
+        # Rusticated stonework filling the full bay (matches ground floor treatment)
+        _draw_rustication(ctx, bay.x_offset, floor_y, bay.width, floor_h)
         return
 
     for child in bay.children:
@@ -595,17 +589,17 @@ def _draw_custom_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_
             if isinstance(child, OrnamentNode):
                 margin = child.transform.position[2]  # encoded in z
                 break
-        panel_w = bay.width - 2 * margin
-        panel_h = floor_h - 2 * margin
-        panel_x = bay.x_offset + margin
-        panel_y = floor_y + margin
-        ctx.rect(panel_x, panel_y, panel_w, panel_h, COLORS["ornament"], stroke_w=0.6)
-        # 3-4 horizontal coursing lines (rustication bands)
-        n_courses = max(3, int(panel_h / 0.25))
-        course_h = panel_h / (n_courses + 1)
-        for i in range(1, n_courses + 1):
+        panel_w = bay.width
+        panel_h = floor_h
+        panel_x = bay.x_offset
+        panel_y = floor_y
+        ctx.rect(panel_x, panel_y, panel_w, panel_h, COLORS["wall_ground"], stroke_w=0.5)
+        # Horizontal rustication lines (same as ground floor)
+        course_h = 0.3
+        n_courses = int(panel_h / course_h)
+        for i in range(1, n_courses):
             ly = panel_y + i * course_h
-            ctx.line(panel_x, ly, panel_x + panel_w, ly, "#A89880", 0.5)
+            ctx.line(panel_x, ly, panel_x + panel_w, ly, "#B8A898", 0.4)
 
     elif style == CustomBayStyle.GEOMETRIC:
         # Diamond (rotated square) — position from IR node
