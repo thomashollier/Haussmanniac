@@ -299,8 +299,10 @@ def _populate_custom_bay(
         # Narrow rectangular window — roughly half the width of a regular window
         wp = grammar.profile.windows
         win_w = bay_spec.width * wp.width_ratio * 0.50
-        win_h = floor_h * wp.upper_height_ratio
-        sill_height = (floor_h - win_h) * wp.sill_position_ratio
+        full_h = floor_h * wp.upper_height_ratio
+        full_sill = (floor_h - full_h) * wp.sill_position_ratio
+        win_h = full_h * 0.50  # half the height of a regular window
+        sill_height = full_sill + (full_h - win_h)  # keep top aligned, raise bottom
         window = WindowNode(
             transform=Transform(position=(0.0, sill_height, 0.0)),
             width=round(win_w, 3),
