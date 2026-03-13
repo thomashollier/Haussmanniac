@@ -589,11 +589,16 @@ def _draw_custom_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_
                 _draw_window(ctx, child, win_x, win_y, bay.width)
 
     elif style == CustomBayStyle.STONEWORK:
-        # Rusticated stone panel with horizontal coursing lines
-        panel_w = bay.width * 0.80
-        panel_h = floor_h * 0.55
-        panel_x = bay.x_offset + (bay.width - panel_w) / 2
-        panel_y = floor_y + (floor_h - panel_h) / 2
+        # Rusticated stone panel — margin matches regular window pier margin
+        margin = 0.10  # fallback
+        for child in bay.children:
+            if isinstance(child, OrnamentNode):
+                margin = child.transform.position[2]  # encoded in z
+                break
+        panel_w = bay.width - 2 * margin
+        panel_h = floor_h - 2 * margin
+        panel_x = bay.x_offset + margin
+        panel_y = floor_y + margin
         ctx.rect(panel_x, panel_y, panel_w, panel_h, COLORS["ornament"], stroke_w=0.6)
         # 3-4 horizontal coursing lines (rustication bands)
         n_courses = max(3, int(panel_h / 0.25))
@@ -603,9 +608,15 @@ def _draw_custom_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_
             ctx.line(panel_x, ly, panel_x + panel_w, ly, "#A89880", 0.5)
 
     elif style == CustomBayStyle.GEOMETRIC:
-        # Diamond (rotated square) inscribed in bay — classic Haussmann stone relief
+        # Diamond (rotated square) — position from IR node
         cx = bay.x_offset + bay.width / 2
-        cy = floor_y + floor_h * 0.5
+        # Use IR y-position for center
+        for child in bay.children:
+            if isinstance(child, OrnamentNode):
+                cy = floor_y + child.transform.position[1]
+                break
+        else:
+            cy = floor_y + floor_h * 0.5
         r = min(bay.width, floor_h) * 0.25
         # Outer diamond
         pts = [

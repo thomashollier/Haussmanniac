@@ -192,11 +192,20 @@ def _populate_upper_floor(
         )
 
         if is_custom and custom_bay_style is not None:
-            # Ground and entresol custom bays: always stonework (too low for portholes)
+            # Ground and entresol custom bays: stonework, except geometric keeps its style
             effective_style = custom_bay_style
             if ft in (FloorType.GROUND, FloorType.ENTRESOL):
-                effective_style = CustomBayStyle.STONEWORK
-            _populate_custom_bay(bay, bay_spec, node, effective_style, grammar)
+                if custom_bay_style != CustomBayStyle.GEOMETRIC:
+                    effective_style = CustomBayStyle.STONEWORK
+            bay.custom_bay_style = effective_style  # sync for SVG rendering
+            # Compute regular window top so custom elements can align to it
+            ref_spec = grammar.get_window_spec(ft, ornament, std_bay_window_w, node.height)
+            if ft == FloorType.NOBLE and has_balcony and grammar.profile.balconies.noble_sill_at_floor:
+                ref_sill = 0.0
+            else:
+                ref_sill = (node.height - ref_spec.height) * grammar.profile.windows.sill_position_ratio
+            ref_win_top = ref_sill + ref_spec.height
+            _populate_custom_bay(bay, bay_spec, node, effective_style, grammar, ref_win_top)
         else:
             # Standard window bay
             # Window — use standard bay window width so door bays get normal windows
@@ -273,18 +282,22 @@ def _populate_custom_bay(
     floor_node: FloorNode,
     custom_style: CustomBayStyle,
     grammar: HaussmannGrammar,
+    ref_win_top: float = 0.0,
 ) -> None:
     """Populate a custom bay with porthole, narrow window, or ornament.
 
     Custom bays are narrow bays at facade edges — no balcony, no
-    balconette, no pilasters.
+    balconette, no pilasters.  All elements align their top to
+    *ref_win_top* (the top of the regular window on this floor).
     """
     floor_h = floor_node.height
 
     if custom_style == CustomBayStyle.PORTHOLE:
         # Circular window: diameter = 25% of floor height, capped at 0.55m
+        # Top sits one diameter below regular window top (margin = diameter)
         diameter = min(floor_h * 0.25, 0.55)
-        sill_height = (floor_h - diameter) / 2.0
+        sill_height = ref_win_top - 1.5 * diameter  # margin of half diameter above
+        sill_height = max(sill_height, 0.05)
         window = WindowNode(
             transform=Transform(position=(0.0, sill_height, 0.0)),
             width=round(diameter, 3),
@@ -296,13 +309,12 @@ def _populate_custom_bay(
         bay.children.append(window)
 
     elif custom_style == CustomBayStyle.NARROW_WINDOW:
-        # Narrow rectangular window — roughly half the width of a regular window
+        # Narrow rectangular window — half width, proportional height, top-aligned
         wp = grammar.profile.windows
         win_w = bay_spec.width * wp.width_ratio * 0.50
-        # Fixed top at 75% of floor height, half-height window — consistent across floors
-        win_top = floor_h * 0.75
         win_h = floor_h * wp.upper_height_ratio * 0.50
-        sill_height = win_top - win_h
+        sill_height = ref_win_top - win_h  # top aligns with regular window top
+        sill_height = max(sill_height, 0.05)
         window = WindowNode(
             transform=Transform(position=(0.0, sill_height, 0.0)),
             width=round(win_w, 3),
@@ -314,18 +326,25 @@ def _populate_custom_bay(
         bay.children.append(window)
 
     elif custom_style == CustomBayStyle.STONEWORK:
-        # Rusticated stone panel with coursing, centered in bay
+        # Rusticated stone panel — margin matches window-to-bay-edge gap
+        # In a custom bay: half-pier = bay_w * custom_pier_ratio / 2
+        bp = grammar.profile.bays
+        margin = bay_spec.width * bp.custom_pier_ratio / 2
+        # Encode margin in transform z so SVG can read it
         ornament_node = OrnamentNode(
-            transform=Transform(position=(0.0, floor_h * 0.35, 0.0)),
+            transform=Transform(position=(0.0, margin, margin)),
             ornament_id="stonework_panel",
             ornament_level=OrnamentLevel.MODERATE,
         )
         bay.children.append(ornament_node)
 
     else:  # GEOMETRIC
-        # Geometric diamond relief pattern, centered in bay
+        # Geometric diamond — top sits one element-size below regular window top
+        r = min(bay_spec.width, floor_h) * 0.25
+        center_y = ref_win_top - 2 * r  # margin of one radius above
+        center_y = max(center_y, r + 0.05)  # keep diamond inside floor
         ornament_node = OrnamentNode(
-            transform=Transform(position=(0.0, floor_h * 0.35, 0.0)),
+            transform=Transform(position=(0.0, center_y, 0.0)),
             ornament_id="geometric_relief",
             ornament_level=OrnamentLevel.MODERATE,
         )
