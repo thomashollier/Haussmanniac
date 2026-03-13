@@ -296,9 +296,9 @@ def _populate_custom_bay(
         bay.children.append(window)
 
     elif custom_style == CustomBayStyle.NARROW_WINDOW:
-        # Narrow rectangular window using the custom bay's own width
+        # Narrow rectangular window — roughly half the width of a regular window
         wp = grammar.profile.windows
-        win_w = bay_spec.width * wp.width_ratio
+        win_w = bay_spec.width * wp.width_ratio * 0.50
         win_h = floor_h * wp.upper_height_ratio
         sill_height = (floor_h - win_h) * wp.sill_position_ratio
         window = WindowNode(

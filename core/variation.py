@@ -275,22 +275,15 @@ class Variation:
     # -- Dormer style ----------------------------------------------------------
 
     def vary_dormer_style(self, grammar: HaussmannGrammar, bay_count: int) -> DormerStyle:
-        """Pick dormer style with controlled variation.
+        """Pick dormer style with uniform probability.
 
-        Each style preset has a base dormer style; when the swap roll hits,
-        BOULEVARD/RESIDENTIAL pick from all 6 dormer types for variety
-        along a street.  MODEST stays within FLAT_SLOPE/ROUND_SLOPE.
+        BOULEVARD/RESIDENTIAL: equal chance of any of 6 styles.
+        MODEST: equal chance of FLAT_SLOPE or ROUND_SLOPE.
+        Always consumes 1 RNG call.
         """
-        vp = grammar.profile.variation
-        roof_spec = grammar.get_roof_spec(bay_count, self.style)
-        base = roof_spec.dormer_style
-        roll = self.rng.random()
-        if roll < vp.dormer_style_swap_pct:
-            if self.style == StylePreset.MODEST:
-                return self.rng.choice([DormerStyle.FLAT_SLOPE, DormerStyle.ROUND_SLOPE])
-            all_styles = list(DormerStyle)
-            return self.rng.choice(all_styles)
-        return base
+        if self.style == StylePreset.MODEST:
+            return self.rng.choice([DormerStyle.FLAT_SLOPE, DormerStyle.ROUND_SLOPE])
+        return self.rng.choice(list(DormerStyle))
 
     # -- Custom bay style ------------------------------------------------------
 
