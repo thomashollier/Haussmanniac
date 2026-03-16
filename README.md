@@ -9,7 +9,7 @@ Pure Python core, deterministic with seed, backend-agnostic intermediate represe
 
 ## How It Works
 
-The generator doesn't draw buildings. It produces a tree of typed dataclasses — an intermediate representation (IR) — describing every architectural element with its dimensions and position in metres. A backend adapter then renders the IR to a target format (currently SVG; Blender and USD planned).
+The generator doesn't draw buildings. It produces a tree of typed dataclasses — an intermediate representation (IR) — describing every architectural element with its dimensions and position in metres. A backend adapter then renders the IR to a target format (currently SVG but designed to support USD and other 3D formats).
 
 ```
 seed + preset ──→ profile ──→ grammar ──→ IR tree ──→ backend ──→ output
