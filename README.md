@@ -4,7 +4,8 @@ Procedural generator for Parisian Haussmann-style building facades. Given a seed
 
 Pure Python core, deterministic with seed, backend-agnostic intermediate representation.
 
-![Grid of generated Haussmann buildings](examples/output/grid_residential_4x16.svg)
+![Boulevard street — grand facades with plane trees](docs/images/street_boulevard.jpg)
+*Boulevard Haussmann: 200m of grand facades with entresols, pilastered surrounds, and plane trees every 30m.*
 
 ## How It Works
 
@@ -53,6 +54,9 @@ The solver fits as many bays as the lot width allows (always odd for symmetry, e
 
 The porte-cochère (carriage entrance) occupies one bay, typically centre or near-centre, and is 1.5× wider than standard bays on boulevard and residential buildings.
 
+![Residential street — typical side street facades](docs/images/street_residential.jpg)
+*Residential side street: moderate ornament, varied lot widths, mixed cafe and boutique ground floors.*
+
 ### Ornament Hierarchy
 
 Ornament follows floor rank. The noble floor (2nd) gets the richest treatment — continuous balcony, pilastered window surrounds, pediments. The 3rd and 4th floors are progressively simpler. The 5th floor gets a second continuous balcony (on grand and residential buildings) or probabilistic balconettes. Modest buildings may have no balconies at all — a per-building coin flip decides.
@@ -85,6 +89,7 @@ Every random decision flows through `random.Random(seed)` with a fixed call sequ
 | Door style | 5-bucket weighted per preset | Arched classic, flat panel, double leaf, glass topped, ornate |
 | Balcony railing | 5-bucket weighted per preset | Classic scroll, geometric, simple bars, art nouveau, greek key |
 | Awning | Bernoulli + 4-bucket | 30% chance, then flat box / retractable / scalloped / striped |
+| Color palette | ±5% S/V, ±2% H per building seed | Subtle stone tone variation across adjacent buildings |
 
 ### What Stays Fixed
 
@@ -106,6 +111,9 @@ The proportional *rules* never change — they define the style:
 | `BOULEVARD` | Rich ornament, pilasters, tall noble floor, entresol | Bd Haussmann, Av de l'Opéra | 2.6 m | 6–7 |
 | `RESIDENTIAL` | Moderate ornament, typical side street | Rue de Rivoli side streets | 2.3 m | 6–7 |
 | `MODEST` | Minimal ornament, wider piers, no entresol | Upper arrondissements | 2.15 m | 5–6 |
+
+![Modest street — narrow lots, upper arrondissements](docs/images/street_modest.jpg)
+*Modest back street: narrow lots, no entresol, simpler surrounds, probabilistic balconies.*
 
 ## Ground Floor Commerce
 
@@ -170,6 +178,7 @@ Available: `bay_count`, `porte_cochere_bay`, `porte_style`, `ground_floor_type`,
 ### Batch Generation
 
 ```bash
+python generate_street.py    # 200m streets × 3 presets → output/street_{boulevard,residential,modest}.png
 python generate_review.py    # 128 buildings × 3 presets → review/{boulevard,residential,modest}/
 python generate_grid.py      # 8×6 mixed grid → output/grid_48.svg
 ```
@@ -189,7 +198,7 @@ core/           Pure Python, zero dependencies. Profile → Grammar → IR tree.
   roof.py         Mansard slopes, dormers (6 styles), chimneys
 
 backends/       Consume IR tree, produce output.
-  svg.py          2D facade elevation renderer
+  svg.py          2D facade elevation renderer + per-building color variation
   svg_elements.py Element-level SVG renderers (cafes, storefronts, doors, awnings)
 
 tests/          pytest suite (242 tests)

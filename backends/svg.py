@@ -18,7 +18,9 @@ Usage::
 
 from __future__ import annotations
 
+import colorsys
 import math
+import random as _random_module
 from dataclasses import dataclass
 
 from core.elements import (
@@ -93,6 +95,57 @@ COLORS = {
     "outline": "#4A4038",
 }
 
+# ---------------------------------------------------------------------------
+# Per-building colour variation (±5% HSV jitter)
+# ---------------------------------------------------------------------------
+
+# Keys to exclude from HSV shifting (pure UI / background colours)
+_COLOR_SKIP = {"sky", "ground", "outline"}
+
+# Snapshot of original values (taken once at import time)
+_COLORS_ORIG: dict[str, str] = dict(COLORS)
+
+def _hex_to_hsv(hex_color: str) -> tuple[float, float, float]:
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) == 3:
+        hex_color = "".join(c * 2 for c in hex_color)
+    r, g, b = (int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+    return colorsys.rgb_to_hsv(r, g, b)
+
+def _hsv_to_hex(h: float, s: float, v: float) -> str:
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, max(0, min(1, s)), max(0, min(1, v)))
+    return f"#{int(r*255):02X}{int(g*255):02X}{int(b*255):02X}"
+
+def _shift_color(hex_color: str, rng: _random_module.Random, pct: float = 0.05, hue_pct: float = 0.02) -> str:
+    """Shift a hex colour by up to ±pct in S/V and ±hue_pct in H."""
+    h, s, v = _hex_to_hsv(hex_color)
+    h += rng.uniform(-hue_pct, hue_pct)
+    s += rng.uniform(-pct, pct)
+    v += rng.uniform(-pct, pct)
+    return _hsv_to_hex(h, s, v)
+
+def apply_color_variation(seed: int, pct: float = 0.05) -> None:
+    """Mutate COLORS and svg_elements._C in place with per-building HSV jitter.
+
+    Call ``restore_colors()`` after rendering to put everything back.
+    """
+    from backends import svg_elements
+    rng = _random_module.Random(seed)
+    for key, orig in _COLORS_ORIG.items():
+        if key in _COLOR_SKIP:
+            COLORS[key] = orig
+        else:
+            COLORS[key] = _shift_color(orig, rng, pct)
+    for key, orig in svg_elements._C_ORIG.items():
+        svg_elements._C[key] = _shift_color(orig, rng, pct)
+
+def restore_colors() -> None:
+    """Restore COLORS and svg_elements._C to their original values."""
+    from backends import svg_elements
+    COLORS.update(_COLORS_ORIG)
+    svg_elements._C.update(svg_elements._C_ORIG)
+
+
 # SVG scale: 1 metre = N pixels
 SCALE = 40
 
@@ -160,6 +213,7 @@ def render_svg(
     show_labels: bool = True,
     show_layout_lines: bool = False,
     margin_m: float = 2.0,
+    color_variation: float = 0.05,
 ) -> str:
     """Render the building's facades as an SVG string.
 
@@ -172,10 +226,28 @@ def render_svg(
         facade_filter: Which facade orientation to render, or None for front.
         show_labels: Annotate floors and dimensions.
         margin_m: Margin around the drawing in metres.
+        color_variation: HSV jitter as fraction (0.05 = ±5%). 0 disables.
 
     Returns:
         Complete SVG document as a string.
     """
+    if color_variation > 0:
+        apply_color_variation(building.seed, color_variation)
+    try:
+        return _render_svg_inner(building, facade_filter, show_labels,
+                                  show_layout_lines, margin_m)
+    finally:
+        if color_variation > 0:
+            restore_colors()
+
+
+def _render_svg_inner(
+    building: BuildingNode,
+    facade_filter: Orientation | None,
+    show_labels: bool,
+    show_layout_lines: bool,
+    margin_m: float,
+) -> str:
     facades = [c for c in building.children if isinstance(c, FacadeNode)]
     roof = next((c for c in building.children if isinstance(c, RoofNode)), None)
 

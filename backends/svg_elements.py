@@ -53,6 +53,9 @@ _C = {
     "awning_cream": "#E8E0D0",
 }
 
+# Snapshot of original values (for color variation restore)
+_C_ORIG: dict[str, str] = dict(_C)
+
 # ── Common ground-floor opening proportions ──────────────────────────
 # These match the reference cafe_options_v4.svg design sheet.
 
