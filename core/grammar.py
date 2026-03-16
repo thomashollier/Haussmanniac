@@ -59,6 +59,7 @@ class BaySpec:
     width: float              # Bay window width (opening between bay piers)
     bay_type: BayType
     is_center: bool = False   # Deprecated — kept for backward compat
+    group: int = 0            # Symmetry group index
 
 
 @dataclass
@@ -468,7 +469,10 @@ class HaussmannGrammar:
                 custom_window_w = custom_bay_w - custom_pier_w
 
                 # Always single-sided — use custom_bay_side preference
-                new_edge_one = (facade_width - interior - custom_bay_w) / 2.0
+                # Inter-group gap = edge width, so solve:
+                # 2*edge + interior + custom_bay_w + (edge - half_pier) = facade_width
+                # => 3*edge = facade_width - interior - custom_bay_w + half_pier
+                new_edge_one = (facade_width - interior - custom_bay_w + half_pier) / 3.0
                 if new_edge_one >= 0.1:
                     if custom_bay_side == 1:
                         insert_custom_right = True
@@ -476,10 +480,25 @@ class HaussmannGrammar:
                         insert_custom_left = True
                     edge = new_edge_one
 
+        # -- Symmetry groups -------------------------------------------------------
+        # When a custom bay exists, it forms its own group (appendage) and the
+        # regular bays form the main group.  The gap between groups equals the
+        # edge pier width (shared, not doubled), creating a visual frame that
+        # reads as two distinct boxes.
+        has_custom = insert_custom_left or insert_custom_right
+        # Inter-group gap = edge width; normal pier gap = half_pier
+        # Extra spacing needed beyond normal pier gap:
+        intergroup_extra = (edge - half_pier) if has_custom else 0.0
+
         # Build specs with cumulative x positioning
         specs: list[BaySpec] = []
         idx = 0
         x_cursor = edge  # left edge of first bay (including half-pier)
+
+        # Group assignment: custom bay = group 0 (left) or group 1 (right)
+        # Regular bays get the other group index
+        custom_group = 0 if insert_custom_left else 1
+        regular_group = 1 if insert_custom_left else 0
 
         # Left custom bay
         if insert_custom_left:
@@ -490,9 +509,10 @@ class HaussmannGrammar:
                 x_offset=round(x, 4),
                 width=round(custom_window_w, 4),
                 bay_type=BayType.CUSTOM,
+                group=custom_group,
             ))
             idx += 1
-            x_cursor += custom_bay_w
+            x_cursor += custom_bay_w + intergroup_extra
 
         # Standard bays
         for i in range(bay_count):
@@ -506,12 +526,14 @@ class HaussmannGrammar:
                 x_offset=round(x, 4),
                 width=round(this_window_w, 4),
                 bay_type=BayType.DOOR if is_door else BayType.WINDOW,
+                group=regular_group,
             ))
             idx += 1
             x_cursor += this_bay_w
 
         # Right custom bay
         if insert_custom_right:
+            x_cursor += intergroup_extra
             custom_half_pier = custom_bay_w * bp.custom_pier_ratio / 2.0
             x = x_cursor + custom_half_pier
             specs.append(BaySpec(
@@ -519,6 +541,7 @@ class HaussmannGrammar:
                 x_offset=round(x, 4),
                 width=round(custom_window_w, 4),
                 bay_type=BayType.CUSTOM,
+                group=custom_group,
             ))
 
         return specs

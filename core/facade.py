@@ -189,6 +189,7 @@ def _populate_upper_floor(
             x_offset=bay_spec.x_offset,
             bay_type=BayType.CUSTOM if is_custom else BayType.WINDOW,
             custom_bay_style=custom_bay_style if is_custom else None,
+            group=bay_spec.group,
         )
 
         if is_custom and custom_bay_style is not None:

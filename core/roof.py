@@ -23,6 +23,7 @@ from dataclasses import replace as _dc_replace
 
 from .grammar import BaySpec, HaussmannGrammar
 from .types import (
+    BayType,
     ChimneyNode,
     DormerNode,
     DormerStyle,
@@ -264,26 +265,36 @@ def _build_dormers(
     # Horizontal inset at dormer base: how far in the slope edge is at dormer_y
     inset_at_dormer = dormer_y / math.tan(lower_angle_rad) if lower_angle_rad else 0.0
 
-    # Compute dormer x-positions based on placement rule
+    # Partition bays by symmetry group — dormers are placed within groups only,
+    # never across group boundaries (prevents visual ties between separate boxes)
+    groups: dict[int, list] = {}
+    for b in bay_layout:
+        groups.setdefault(b.group, []).append(b)
+
+    # Compute dormer x-positions per group
     x_positions: list[float] = []
-    if dormer_placement == "EVERY_BAY":
-        x_positions = [b.x_offset + b.width / 2 for b in bay_layout]
-    elif dormer_placement == "EVERY_OTHER":
-        x_positions = [b.x_offset + b.width / 2
-                       for i, b in enumerate(bay_layout) if i % 2 == 0]
-    elif dormer_placement == "BETWEEN_BAYS":
-        for i in range(len(bay_layout) - 1):
-            left = bay_layout[i]
-            right = bay_layout[i + 1]
-            x_positions.append((left.x_offset + left.width + right.x_offset) / 2)
-    elif dormer_placement == "CENTER_ONLY":
-        mid = len(bay_layout) // 2
-        x_positions = [bay_layout[mid].x_offset + bay_layout[mid].width / 2]
-    else:
-        # Legacy: use dormer_every_n_bays from roof spec
-        x_positions = [b.x_offset + b.width / 2
-                       for i, b in enumerate(bay_layout)
-                       if i % roof_spec.dormer_every_n_bays == 0]
+    for _gid, group_bays in sorted(groups.items()):
+        # Skip appendage groups (custom bays) — no dormers above them
+        if all(b.bay_type == BayType.CUSTOM for b in group_bays):
+            continue
+        if dormer_placement == "EVERY_BAY":
+            x_positions.extend(b.x_offset + b.width / 2 for b in group_bays)
+        elif dormer_placement == "EVERY_OTHER":
+            x_positions.extend(b.x_offset + b.width / 2
+                               for i, b in enumerate(group_bays) if i % 2 == 0)
+        elif dormer_placement == "BETWEEN_BAYS":
+            for i in range(len(group_bays) - 1):
+                left = group_bays[i]
+                right = group_bays[i + 1]
+                x_positions.append((left.x_offset + left.width + right.x_offset) / 2)
+        elif dormer_placement == "CENTER_ONLY":
+            mid = len(group_bays) // 2
+            x_positions.append(group_bays[mid].x_offset + group_bays[mid].width / 2)
+        else:
+            # Legacy: use dormer_every_n_bays from roof spec
+            x_positions.extend(b.x_offset + b.width / 2
+                               for i, b in enumerate(group_bays)
+                               if i % roof_spec.dormer_every_n_bays == 0)
 
     left_edge = inset_at_dormer
     right_edge = lot_width - inset_at_dormer

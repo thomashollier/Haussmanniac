@@ -1,40 +1,24 @@
-"""Generate 128 RESIDENTIAL buildings for review.
-
-Each building gets a unique seed and random profile_variation.
-Outputs individual PNGs + a CSV catalogue with descriptions.
-"""
+"""Generate 128 buildings per category (BOULEVARD, RESIDENTIAL, MODEST) as PNGs in review/."""
 
 import csv
 import os
 import random
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import cairosvg
-
 from core.generator import generate_building
 from core.types import (
-    BalconyNode,
-    BayNode,
-    BayType,
-    BuildingConfig,
-    ChimneyNode,
-    CustomBayStyle,
-    DormerNode,
-    FacadeNode,
-    FloorNode,
-    FloorType,
-    GroundFloorNode,
-    GroundFloorType,
-    Orientation,
-    PorteStyle,
-    RoofNode,
-    MansardSlopeNode,
+    BalconyNode, BayNode, BayType, BuildingConfig, ChimneyNode,
+    CustomBayStyle, DormerNode, FacadeNode, FloorNode, FloorType,
+    GroundFloorNode, GroundFloorType, MansardSlopeNode, Orientation,
+    PorteStyle, RoofNode,
 )
 from backends.svg import render_svg
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review")
+REVIEW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review")
+CATEGORIES = ["boulevard", "residential", "modest"]
 N = 128
 
 
@@ -50,19 +34,15 @@ def describe_building(building, config):
     chimneys = [c for c in roof.children if isinstance(c, ChimneyNode)]
     slopes = [c for c in roof.children if isinstance(c, MansardSlopeNode)]
 
-    # Bay count + custom bays from first regular floor
-    all_bays = []
-    custom_bays = []
+    all_bays, custom_bays = [], []
     if floors:
         all_bays = [c for c in floors[0].children if isinstance(c, BayNode)]
         custom_bays = [b for b in all_bays if b.bay_type == BayType.CUSTOM]
     n_bays = len(all_bays)
 
-    # Porte info
     has_porte = gf_list[0].has_porte_cochere if gf_list else False
     porte_idx = gf_list[0].porte_cochere_bay_index if gf_list and has_porte else None
 
-    # Door bay — find porte style from ground floor bays
     porte_style_str = ""
     if has_porte and gf_list:
         gf_bays = [c for c in gf_list[0].children if isinstance(c, BayNode)]
@@ -70,7 +50,6 @@ def describe_building(building, config):
         if door_bays:
             porte_style_str = door_bays[0].porte_style.name.lower()
 
-    # Ground floor type — infer from bay types
     gf_type = "residential"
     if gf_list:
         gf_bays = [c for c in gf_list[0].children if isinstance(c, BayNode)]
@@ -81,25 +60,17 @@ def describe_building(building, config):
         elif shop_bays:
             gf_type = "commercial"
 
-    # Balconies — check noble and fifth floors
     balcony_desc = []
     for fl in floors:
         if fl.floor_type in (FloorType.NOBLE, FloorType.FIFTH):
             bal_nodes = [c for c in fl.children if isinstance(c, BalconyNode)]
             if bal_nodes:
                 continuous = any(b.is_continuous for b in bal_nodes)
-                if continuous:
-                    balcony_desc.append(f"{fl.floor_type.name.lower()}=continuous")
-                else:
-                    balcony_desc.append(f"{fl.floor_type.name.lower()}=balconette")
+                balcony_desc.append(f"{fl.floor_type.name.lower()}={'continuous' if continuous else 'balconette'}")
             else:
                 balcony_desc.append(f"{fl.floor_type.name.lower()}=none")
 
-    # Entresol
     has_entresol = any(f.floor_type == FloorType.ENTRESOL for f in floors)
-
-    # Mansard info
-    mansard_h = roof.transform.position[1]  # cornice height
     roof_h = slopes[0].height if slopes else 0
 
     parts = []
@@ -125,56 +96,118 @@ def describe_building(building, config):
     parts.append(f"{len(chimneys)}chim")
     parts.append(f"roof_h={roof_h:.1f}m")
 
+    # Element palette info
+    ep = building.element_palette
+    if ep:
+        parts.append(f"cafe={ep.cafe_style.name.lower()}")
+        parts.append(f"store={ep.storefront_style.name.lower()}")
+        parts.append(f"door={ep.door_style.name.lower()}")
+        parts.append(f"awning={ep.awning_style.name.lower()}")
+
     return "; ".join(parts)
 
 
+def clear_directory(path):
+    """Remove all files in a directory."""
+    if not os.path.exists(path):
+        return 0
+    count = 0
+    for f in os.listdir(path):
+        fp = os.path.join(path, f)
+        if os.path.isfile(fp):
+            os.remove(fp)
+            count += 1
+    return count
+
+
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
+    # Clear existing files
+    for cat in CATEGORIES:
+        cat_dir = os.path.join(REVIEW_DIR, cat)
+        n_removed = clear_directory(cat_dir)
+        os.makedirs(cat_dir, exist_ok=True)
+        if n_removed:
+            print(f"  Cleared {n_removed} files from {cat}/")
 
-    # Deterministic but spread-out seeds and variations
-    rng = random.Random(2026)
-    configs = []
-    for i in range(N):
-        seed = rng.randint(0, 99999)
-        variation = round(rng.uniform(0.0, 1.0), 2)
-        configs.append((i, seed, variation))
+    # Clear root review PNGs
+    n_root = clear_directory_pngs(REVIEW_DIR)
+    if n_root:
+        print(f"  Cleared {n_root} PNGs from review/")
 
-    rows = []
-    for i, seed, variation in configs:
-        filename = f"{i+1:03d}_s{seed}_v{variation:.2f}.png"
-        print(f"[{i+1}/{N}] seed={seed} var={variation:.2f} -> {filename}")
+    # Generate per category
+    for cat in CATEGORIES:
+        preset = cat.upper()
+        cat_dir = os.path.join(REVIEW_DIR, cat)
+        rng = random.Random(2026)
 
-        config = BuildingConfig(
-            seed=seed,
-            style_preset="RESIDENTIAL",
-            profile_variation=variation,
-        )
-        building = generate_building(config)
-        svg_str = render_svg(building, show_labels=False)
+        rows = []
+        for i in range(N):
+            seed = rng.randint(0, 99999)
+            variation = round(rng.uniform(0.0, 1.0), 2)
 
-        # Convert SVG -> PNG
-        png_path = os.path.join(OUT_DIR, filename)
-        cairosvg.svg2png(bytestring=svg_str.encode("utf-8"), write_to=png_path,
-                         output_width=600)
+            if preset == "BOULEVARD":
+                lot_width = round(rng.uniform(16.0, 24.0), 1)
+            elif preset == "RESIDENTIAL":
+                lot_width = round(rng.uniform(11.0, 18.0), 1)
+            else:
+                lot_width = round(rng.uniform(7.0, 12.0), 1)
 
-        desc = describe_building(building, config)
-        rows.append({
-            "filename": filename,
-            "seed": seed,
-            "variation": variation,
-            "description": desc,
-            "feedback": "",
-        })
+            config = BuildingConfig(
+                style_preset=preset,
+                seed=seed,
+                lot_width=lot_width,
+                profile_variation=variation,
+            )
+            building = generate_building(config)
+            svg_str = render_svg(building, show_labels=False)
 
-    # Write CSV
-    csv_path = os.path.join(OUT_DIR, "review.csv")
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["filename", "seed", "variation", "description", "feedback"])
-        writer.writeheader()
-        writer.writerows(rows)
+            base = f"{i:03d}_s{seed}_v{variation:.2f}"
+            svg_path = os.path.join(cat_dir, f"{base}.svg")
+            png_path = os.path.join(cat_dir, f"{base}.png")
 
-    print(f"\nDone! {N} buildings in {OUT_DIR}/")
-    print(f"CSV catalogue: {csv_path}")
+            with open(svg_path, "w") as f:
+                f.write(svg_str)
+
+            subprocess.run(
+                ["rsvg-convert", "-o", png_path, svg_path],
+                check=True,
+            )
+
+            desc = describe_building(building, config)
+            rows.append({
+                "filename": f"{base}.png",
+                "seed": seed,
+                "variation": variation,
+                "lot_width": lot_width,
+                "description": desc,
+            })
+
+            if (i + 1) % 32 == 0:
+                print(f"  {preset}: {i + 1}/{N}")
+
+        # Write CSV
+        csv_path = os.path.join(cat_dir, "review.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["filename", "seed", "variation", "lot_width", "description"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+        print(f"  {preset}: {N} buildings -> {cat}/")
+
+    print("\nDone!")
+
+
+def clear_directory_pngs(path):
+    """Remove only PNG files from a directory (not subdirs)."""
+    if not os.path.exists(path):
+        return 0
+    count = 0
+    for f in os.listdir(path):
+        fp = os.path.join(path, f)
+        if os.path.isfile(fp) and f.endswith(".png"):
+            os.remove(fp)
+            count += 1
+    return count
 
 
 if __name__ == "__main__":

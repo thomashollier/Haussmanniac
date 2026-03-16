@@ -21,6 +21,14 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from core.elements import (
+    AwningStyle,
+    BalconyStyle,
+    CafeStyle,
+    DoorStyle,
+    ElementPalette,
+    StorefrontStyle,
+)
 from core.types import (
     BalconyNode,
     BayNode,
@@ -42,7 +50,6 @@ from core.types import (
     Orientation,
     PedimentStyle,
     PilasterNode,
-    PorteStyle,
     RoofNode,
     StoreType,
     StringCourseNode,
@@ -77,10 +84,6 @@ COLORS = {
     "ornament": "#C0B098",
     "door": "#5A4030",           # Dark wood — porte-cochère
     "shop_door": "#6B5040",      # Shop entrance — lighter than porte-cochère
-    "awning": "#96BF93",         # Awning — desaturated green, 75% brightness
-    "awning_stripe": "#A8CCA5",  # Awning stripe highlight
-    "terrace_rail": "#3A3A3A",   # Low terrace railing
-    "signage_band": "#D0C4AE",   # Signage area above shopfront
     "pier": "#DDD4C4",           # Interior pier fill
     "pier_edge": "#DDD4C4",     # Edge pier fill — same as interior piers
     "custom_bay_wall": "#D6CCB8",  # Slightly darker/warmer tint for custom bay background
@@ -101,6 +104,7 @@ class SVGContext:
     scale: float = SCALE
     x_origin: float = 0.0   # Pixel offset for this facade
     y_origin: float = 0.0   # Pixel offset (bottom of facade)
+    palette: ElementPalette | None = None  # Per-building element styles
 
     def px(self, metres: float) -> float:
         return metres * self.scale
@@ -200,10 +204,16 @@ def render_svg(
     canvas_w = (facade_w + margin_m * 2) * SCALE
     canvas_h = (draw_h + margin_m * 3) * SCALE  # Extra margin for ground + sky
 
+    # Resolve element palette from building (may be None for older IR trees)
+    palette = None
+    if hasattr(building, 'element_palette') and building.element_palette is not None:
+        palette = building.element_palette
+
     ctx = SVGContext(
         elements=[],
         x_origin=margin_m * SCALE,
         y_origin=(draw_h + margin_m * 1.5) * SCALE,
+        palette=palette,
     )
 
     # -- Background ---
@@ -285,10 +295,10 @@ def _draw_ground_floor(ctx: SVGContext, node: GroundFloorNode, facade_w: float, 
             if id(child) not in group_bay_ids:
                 _draw_ground_bay(ctx, child, y0, h)
 
-    # Vertical pier lines between bays
-    _draw_pier_lines(ctx, bays, y0, h, facade_w)
+    # Vertical pier lines between bays (skip piers inside store groups)
+    _draw_pier_lines(ctx, bays, y0, h, facade_w, store_group_ids=group_bay_ids)
 
-    # Store groups drawn last — span across pier lines between their bays
+    # Store groups drawn last — independent canvas, no pier constraints
     for group in cafe_groups:
         _draw_cafe_group(ctx, group, y0, h)
     for group in boutique_groups:
@@ -354,10 +364,18 @@ def _draw_upper_floor(ctx: SVGContext, node: FloorNode, facade_w: float, labels:
 
 
     # Continuous balcony drawn last so it's in front of everything
+    # Draw one balcony span per symmetry group (not across group boundaries)
     if has_continuous:
         for child in node.children:
             if isinstance(child, BalconyNode) and child.is_continuous:
-                _draw_continuous_balcony(ctx, child, y0, facade_w, bays)
+                groups: dict[int, list] = {}
+                for b in bays:
+                    groups.setdefault(b.group, []).append(b)
+                for _gid, group_bays in sorted(groups.items()):
+                    # Skip balcony on appendage groups (all custom bays)
+                    if all(b.bay_type == BayType.CUSTOM for b in group_bays):
+                        continue
+                    _draw_continuous_balcony(ctx, child, y0, facade_w, group_bays)
 
     if labels:
         ft_name = node.floor_type.name.capitalize()
@@ -382,19 +400,14 @@ def _draw_ground_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: flo
             win_y = floor_y + child.transform.position[1]
 
             if bay.bay_type == BayType.DOOR:
-                if bay.porte_style == PorteStyle.FLAT:
-                    _draw_flat_opening(ctx, win_x, win_y, child.width, child.height,
-                                       COLORS["door"])
-                else:
-                    _draw_arched_opening(ctx, win_x, win_y, child.width, child.height,
-                                         COLORS["door"])
+                from backends.svg_elements import render_door
+                palette = ctx.palette
+                door_style = palette.door_style if palette else DoorStyle.ARCHED_CLASSIC
+                render_door(ctx, door_style, win_x, win_y,
+                            child.width, child.height)
             elif bay.bay_type == BayType.WINDOW:
                 # Residential window — standard upper-floor style
                 _draw_window(ctx, child, win_x, win_y, bay.width)
-            else:
-                # Fallback for shopfront bays not in a group
-                ctx.rect(win_x, win_y, child.width, child.height,
-                         COLORS["window"], stroke_w=1.0)
 
         elif isinstance(child, OrnamentNode):
             if "keystone" in child.ornament_id:
@@ -419,79 +432,43 @@ def _find_store_groups(bays: list[BayNode], store_type: StoreType) -> list[list[
     return groups
 
 
+def _store_group_span(group: list[BayNode]) -> tuple[float, float]:
+    """Compute the full visual span for a store group, including pier zones."""
+    from backends.svg_elements import _cafe_group_span
+    x, w, _ = _cafe_group_span(group)
+    return x, w
+
+
 def _draw_boutique_group(ctx: SVGContext, group: list[BayNode], floor_y: float, floor_h: float):
-    """Draw a boutique as one continuous display window spanning all bays.
+    """Draw a boutique spanning all bays in the group, using element palette style."""
+    from backends.svg_elements import render_awning, render_storefront_group
 
-    The window sill sits at 1.0 m above ground.  At the entry bay, a
-    centered shop door runs from ground to the window top.  A continuous
-    awning matches the cafe style.
-    """
-    first, last = group[0], group[-1]
+    palette = ctx.palette
+    sf_style = palette.storefront_style if palette else StorefrontStyle.CLASSIC
+    awning_style = palette.awning_style if palette else AwningStyle.NONE
 
-    # Window spans the full width of all bays in the group
-    win_x = first.x_offset
-    win_w = (last.x_offset + last.width) - win_x
-    sill = 0.50
-    win_y = floor_y + sill
-    win_h = floor_h * 0.70 - sill
+    render_storefront_group(ctx, sf_style, group, floor_y, floor_h)
 
-    # Entry bay door — drawn first so storefront window paints over the top portion
-    entry_bay = next((b for b in group if b.is_store_entry), None)
-    if entry_bay:
-        win_child = next((c for c in entry_bay.children if isinstance(c, WindowNode)), None)
-        door_w = win_child.width if win_child else entry_bay.width * 0.45
-        door_x = entry_bay.x_offset + (entry_bay.width - door_w) / 2
-        door_top = win_y + win_h
-
-        # Door panel (same color as windows, ground to window top)
-        ctx.rect(door_x, floor_y, door_w, door_top - floor_y,
-                 COLORS["window"], stroke_w=1.0)
-        # Door handle
-        ctx.rect(door_x + door_w * 0.75, floor_y + (door_top - floor_y) * 0.5,
-                 0.04, 0.08, COLORS["window_frame"], stroke_w=0.3)
-
-    # Continuous display window — drawn on top of door
-    ctx.rect(win_x, win_y, win_w, win_h, COLORS["window"], stroke_w=1.0)
-
-    # Single transom at 80% of window height
-    transom_y = win_y + win_h * 0.8
-    ctx.line(win_x, transom_y, win_x + win_w, transom_y,
-             COLORS["window_frame"], 0.8)
-
-    # Continuous awning
-    awning_h = 0.30
-    awning_proj = 0.06
-    awning_y = win_y + win_h
-    ctx.rect(win_x - awning_proj, awning_y, win_w + awning_proj * 2, awning_h,
-             COLORS["awning"], stroke_w=0.6)
+    # Awning spans the full group (including pier zones)
+    open_x, open_w = _store_group_span(group)
+    open_h = floor_h * 0.83
+    render_awning(ctx, awning_style, open_x, floor_y + open_h, open_w)
 
 
 def _draw_cafe_group(ctx: SVGContext, group: list[BayNode], floor_y: float, floor_h: float):
-    """Draw a cafe as one continuous opening spanning all bays in the group.
+    """Draw a cafe spanning all bays in the group, using element palette style."""
+    from backends.svg_elements import render_awning, render_cafe_group
 
-    Renders a single wide glass expanse from ground level to a lintel lower
-    than the porte-cochère, with one continuous deep-red awning above.
-    No mullions — suggests a wide open terrace interior.
-    """
-    first, last = group[0], group[-1]
+    palette = ctx.palette
+    cafe_style = palette.cafe_style if palette else CafeStyle.BISTRO_MULLIONS
+    awning_style = palette.awning_style if palette else AwningStyle.NONE
 
-    # Opening spans the full width of all bays in the group
-    open_x = first.x_offset
-    open_w = (last.x_offset + last.width) - open_x
+    render_cafe_group(ctx, cafe_style, group, floor_y, floor_h)
 
-    # Sill at ground level, top lower than porte-cochère
-    open_y = floor_y
-    open_h = floor_h * 0.70
-
-    # One continuous glass opening — no mullions
-    ctx.rect(open_x, open_y, open_w, open_h, COLORS["window"], stroke_w=1.0)
-
-    # Continuous awning
-    awning_h = 0.30
-    awning_proj = 0.06
-    awning_y = open_y + open_h
-    ctx.rect(open_x - awning_proj, awning_y, open_w + awning_proj * 2, awning_h,
-             COLORS["awning"], stroke_w=0.6)
+    # Awning spans the full group (including pier zones)
+    open_x, open_w = _store_group_span(group)
+    open_h = floor_h * 0.83
+    render_awning(ctx, awning_style, open_x, floor_y + open_h, open_w)
 
 
 def _draw_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_h: float, floor_node: FloorNode):
@@ -635,7 +612,8 @@ def _draw_custom_upper_bay(ctx: SVGContext, bay: BayNode, floor_y: float, floor_
 # Pier lines (vertical structure between bays)
 # ---------------------------------------------------------------------------
 
-def _draw_pier_lines(ctx: SVGContext, bays: list, floor_y: float, floor_h: float, facade_w: float = 0.0):
+def _draw_pier_lines(ctx: SVGContext, bays: list, floor_y: float, floor_h: float,
+                     facade_w: float = 0.0, store_group_ids: set[int] | None = None):
     """Draw bay piers and edge piers.
 
     **Bay piers** are the gaps between adjacent bay windows — each bay
@@ -644,9 +622,13 @@ def _draw_pier_lines(ctx: SVGContext, bays: list, floor_y: float, floor_h: float
 
     **Edge piers** sit between the outermost bays and the facade edges,
     providing a buffer to the party walls.  Drawn in a distinct colour.
+
+    Piers between bays that are both in a store group (cafe/storefront)
+    are suppressed — those groups are treated as an independent canvas.
     """
     if not bays:
         return
+    sg = store_group_ids or set()
 
     def _draw_one_pier(left_x: float, right_x: float, is_edge: bool = False):
         w = right_x - left_x
@@ -664,10 +646,16 @@ def _draw_pier_lines(ctx: SVGContext, bays: list, floor_y: float, floor_h: float
         _draw_one_pier(0, first_left, is_edge=True)
 
     # Bay piers (between adjacent bay windows)
+    # Skip piers between bays that are both in the same store group
     for i in range(len(bays) - 1):
-        right = bays[i].x_offset + bays[i].width
-        left = bays[i + 1].x_offset
-        _draw_one_pier(right, left)
+        left_bay, right_bay = bays[i], bays[i + 1]
+        # Both in a store group → no pier (group is independent canvas)
+        if id(left_bay) in sg and id(right_bay) in sg and left_bay.store_type == right_bay.store_type:
+            continue
+        right = left_bay.x_offset + left_bay.width
+        left = right_bay.x_offset
+        is_group_boundary = left_bay.group != right_bay.group
+        _draw_one_pier(right, left, is_edge=is_group_boundary)
 
     # Right edge pier (last bay window to facade edge)
     if facade_w > 0:
@@ -795,32 +783,6 @@ def _draw_window(ctx: SVGContext, win: WindowNode, x: float, y: float, bay_w: fl
     return surround_pad
 
 
-def _draw_arched_opening(ctx: SVGContext, x: float, y: float, w: float, h: float, fill: str):
-    """Draw an arched opening (porte-cochère with semicircular top)."""
-    # Rectangular lower portion
-    arch_h = w / 2  # Semicircular arch radius = half width
-    rect_h = h - arch_h
-    ctx.rect(x, y, w, rect_h, fill, stroke_w=1.0)
-
-    # Arch (approximated with a polygon)
-    cx = x + w / 2
-    cy = y + rect_h
-    steps = 12
-    pts = [(x, cy)]
-    for i in range(steps + 1):
-        angle = math.pi * i / steps
-        px = cx - (w / 2) * math.cos(angle)
-        py = cy + (arch_h) * math.sin(angle)
-        pts.append((px, py))
-    pts.append((x + w, cy))
-    ctx.polygon(pts, fill, stroke_w=1.0)
-
-
-def _draw_flat_opening(ctx: SVGContext, x: float, y: float, w: float, h: float, fill: str):
-    """Draw a flat-topped opening (porte-cochère with lintel)."""
-    ctx.rect(x, y, w, h, fill, stroke_w=1.0)
-
-
 def _draw_pediment(ctx: SVGContext, x: float, y: float, bay_w: float, style: str):
     """Draw a triangular or segmental pediment above a window."""
     ped_w = bay_w * 0.80
@@ -913,16 +875,12 @@ def _draw_continuous_balcony(ctx: SVGContext, bal: BalconyNode, floor_y: float,
                             facade_w: float, bays: list | None = None):
     """Draw a prominent continuous balcony spanning the bay extent.
 
-    The balcony runs from the left edge of the first bay to the right
-    edge of the last bay (plus a small overhang), not the full facade
-    width.  This keeps it inside the edge piers.
+    Dispatches railing style through the element palette system.
     """
-    slab_h = 0.12
-    slab_overhang = 0.15  # Balcony projects slightly past outermost bays
+    slab_overhang = 0.15
 
     # Compute balcony span from bay extents (outer edge of half-piers)
     if bays and len(bays) >= 2:
-        # Half-pier width = gap between adjacent bay windows / 2
         half_pier = (bays[1].x_offset - (bays[0].x_offset + bays[0].width)) / 2.0
         bal_left = bays[0].x_offset - half_pier
         bal_right = bays[-1].x_offset + bays[-1].width + half_pier
@@ -932,130 +890,23 @@ def _draw_continuous_balcony(ctx: SVGContext, bal: BalconyNode, floor_y: float,
     else:
         bal_left = 0.0
         bal_right = facade_w
-    bal_w = bal_right - bal_left
 
     span_left = bal_left - slab_overhang
     span_right = bal_right + slab_overhang
-    span_w = span_right - span_left
 
-    # Shadow under the slab (suggests depth/projection)
-    shadow_h = 0.06
-    ctx.rect(span_left, floor_y - shadow_h, span_w, shadow_h,
-             "#B0A898", stroke_w=0.0)
-
-    # Corbels / brackets under the slab
-    corbel_w = 0.10
-    corbel_h = 0.18
-    corbel_spacing = 0.6
-    n_corbels = int(bal_w / corbel_spacing)
-    for i in range(n_corbels + 1):
-        cx = bal_left + i * corbel_spacing
-        # Trapezoid corbel
-        ctx.polygon([
-            (cx - corbel_w * 0.3, floor_y - shadow_h),
-            (cx + corbel_w * 0.3, floor_y - shadow_h),
-            (cx + corbel_w * 0.5, floor_y - shadow_h - corbel_h),
-            (cx - corbel_w * 0.5, floor_y - shadow_h - corbel_h),
-        ], COLORS["cornice"], stroke=COLORS["cornice_stroke"], stroke_w=0.3)
-
-    # Stone slab
-    ctx.rect(span_left, floor_y, span_w, slab_h,
-             COLORS["balcony_floor"], stroke=COLORS["cornice_stroke"], stroke_w=0.3)
-    # Slab edge line (strong)
-    ctx.line(span_left, floor_y + slab_h, span_right,
-             floor_y + slab_h, COLORS["outline"], 1.0)
-
-    # Wrought-iron railing
-    rail_base = floor_y + slab_h
-    rail_h = bal.railing_height
-
-    # Top rail (thick)
-    ctx.rect(span_left, rail_base + rail_h - 0.03,
-             span_w, 0.03,
-             COLORS["balcony_rail"], stroke_w=0.5)
-    # Bottom rail
-    ctx.line(span_left, rail_base + 0.02,
-             span_right, rail_base + 0.02,
-             COLORS["balcony_rail"], 0.5)
-    # Mid rail
-    ctx.line(span_left, rail_base + rail_h * 0.5,
-             span_right, rail_base + rail_h * 0.5,
-             COLORS["balcony_rail"], 0.3)
-
-    # Vertical bars
-    bar_spacing = 0.08
-    n_bars = int(span_w / bar_spacing)
-    for i in range(n_bars + 1):
-        bx = span_left + i * bar_spacing
-        ctx.line(bx, rail_base + 0.02, bx, rail_base + rail_h - 0.03,
-                 COLORS["balcony_rail"], 0.4)
-    # Ensure a post at the far right edge
-    ctx.line(span_right, rail_base + 0.02, span_right, rail_base + rail_h - 0.03,
-             COLORS["balcony_rail"], 0.4)
-
-    # Decorative scroll circles between bars (every 4th bar)
-    for i in range(0, n_bars, 4):
-        scx = span_left + i * bar_spacing + bar_spacing * 2
-        scy = rail_base + rail_h * 0.3
-        r = bar_spacing * 1.2
-        ctx.elements.append(
-            f'<circle cx="{ctx.x(scx):.1f}" cy="{ctx.y(scy):.1f}" r="{ctx.px(r):.1f}" '
-            f'fill="none" stroke="{COLORS["balcony_rail"]}" stroke-width="0.4"/>'
-        )
+    from backends.svg_elements import render_continuous_balcony
+    palette = ctx.palette
+    bal_style = palette.balcony_style if palette else BalconyStyle.CLASSIC_SCROLL
+    render_continuous_balcony(ctx, bal_style, span_left, span_right,
+                              floor_y, bal.railing_height, bal_left, bal_right)
 
 
 def _draw_balconette(ctx: SVGContext, bal: BalconyNode, x: float, y: float):
-    """Draw an individual balconette (small projecting balcony per window).
-
-    Rendered with a small stone slab, a pair of corbels, and a short
-    wrought-iron railing with vertical bars.
-    """
-    overhang = 0.06
-    slab_h = 0.07
-
-    # Small corbels under slab
-    corbel_h = 0.10
-    for cx_off in [bal.width * 0.2, bal.width * 0.8]:
-        cx = x + cx_off
-        ctx.polygon([
-            (cx - 0.04, y),
-            (cx + 0.04, y),
-            (cx + 0.05, y - corbel_h),
-            (cx - 0.05, y - corbel_h),
-        ], COLORS["cornice"], stroke=COLORS["cornice_stroke"], stroke_w=0.3)
-
-    # Slab
-    ctx.rect(x - overhang, y, bal.width + overhang * 2, slab_h,
-             COLORS["balcony_floor"], stroke=COLORS["cornice_stroke"], stroke_w=0.3)
-
-    # Railing — balconette rails are 0.5m, inset 8cm from bay edges
-    rail_base = y + slab_h
-    rail_h = 0.5
-    margin = 0.08
-    rail_left = x + margin
-    rail_right = x + bal.width - margin
-    rail_w = rail_right - rail_left
-
-    # Vertical bars (same spacing & weight as noble floor)
-    n_bars = max(3, int(rail_w / 0.08))
-    bar_spacing = rail_w / n_bars
-    for i in range(n_bars + 1):
-        bx = rail_left + i * bar_spacing
-        ctx.line(bx, rail_base + 0.02, bx, rail_base + rail_h - 0.03,
-                 COLORS["balcony_rail"], 0.4)
-
-    # Top rail (matches noble: rect with 0.03 height, stroke 0.5)
-    ctx.rect(rail_left, rail_base + rail_h - 0.03,
-             rail_w, 0.03,
-             COLORS["balcony_rail"], stroke_w=0.5)
-    # Bottom rail (matches noble: stroke 0.5)
-    ctx.line(rail_left, rail_base + 0.02,
-             rail_right, rail_base + 0.02,
-             COLORS["balcony_rail"], 0.5)
-    # Mid rail (matches noble: stroke 0.3)
-    ctx.line(rail_left, rail_base + rail_h * 0.5,
-             rail_right, rail_base + rail_h * 0.5,
-             COLORS["balcony_rail"], 0.3)
+    """Draw an individual balconette, dispatching railing style through element palette."""
+    from backends.svg_elements import render_balconette
+    palette = ctx.palette
+    bal_style = palette.balcony_style if palette else BalconyStyle.CLASSIC_SCROLL
+    render_balconette(ctx, bal_style, x, y, bal.width)
 
 
 def _draw_cornice(ctx: SVGContext, node: CorniceNode):

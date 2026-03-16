@@ -258,6 +258,7 @@ class BayNode(IRNode):
     custom_bay_style: CustomBayStyle | None = None  # Set on CUSTOM-type bays
     store_type: StoreType | None = None      # Only set on commercial ground-floor bays
     is_store_entry: bool = False              # True for the bay that has the shop door
+    group: int = 0                           # Symmetry group index
     children: list[IRNode] = field(default_factory=list)
 
 
@@ -362,6 +363,7 @@ class BuildingNode(IRNode):
     num_floors: int = 6
     style_preset: StylePreset = StylePreset.RESIDENTIAL
     seed: int = 0
+    element_palette: object | None = None  # core.elements.ElementPalette (avoids circular import)
     children: list[IRNode] = field(default_factory=list)  # Facades, RoofNode, CornerNodes
 
 
@@ -378,6 +380,7 @@ class BuildingDecisions:
     reference any earlier choice.
     """
     balcony_types: dict[FloorType, BalconyType] = field(default_factory=dict)
+    element_palette: object | None = None   # core.elements.ElementPalette (avoids circular import)
 
 
 # ---------------------------------------------------------------------------

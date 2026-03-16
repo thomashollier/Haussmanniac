@@ -159,9 +159,13 @@ def build_ground_floor(
 def _assign_store_types(ground_node: GroundFloorNode) -> None:
     """Group consecutive shopfront bays into stores and assign types.
 
-    Groups of 1–2 consecutive SHOPFRONT bays become BOUTIQUE (small shop
-    with a door + display window).  Groups of 3+ become CAFE (open terrace
-    with folding doors and awning).
+    Only groups of 2+ consecutive SHOPFRONT bays qualify as commercial
+    units — single isolated shopfront bays revert to regular windows.
+    Groups of 2 become BOUTIQUE, groups of 3+ become CAFE.
+
+    When two groups exist (split by the porte-cochère), they are given
+    different types so the two sides of the door look distinct: the
+    larger group becomes CAFE and the smaller becomes BOUTIQUE.
     """
     bays = [c for c in ground_node.children if isinstance(c, BayNode)]
 
@@ -178,17 +182,42 @@ def _assign_store_types(ground_node: GroundFloorNode) -> None:
     if current:
         groups.append(current)
 
-    # Assign store types
+    # Drop single-bay groups (too narrow for a storefront)
+    valid_groups: list[list[BayNode]] = []
     for group in groups:
-        if len(group) >= 3:
-            st = StoreType.CAFE
-            entry_idx = len(group) // 2  # center bay
+        if len(group) < 2:
+            for bay in group:
+                bay.bay_type = BayType.WINDOW
         else:
-            st = StoreType.BOUTIQUE
-            entry_idx = 0  # first bay
-        for i, bay in enumerate(group):
-            bay.store_type = st
-            bay.is_store_entry = (i == entry_idx)
+            valid_groups.append(group)
+
+    # When two groups flank the door, force different types so each side
+    # has its own visual identity.  The larger group gets CAFE, the
+    # smaller gets BOUTIQUE.  If only one group, use size-based default.
+    if len(valid_groups) == 2:
+        # Sort by size descending — larger group first
+        ordered = sorted(valid_groups, key=len, reverse=True)
+        type_sequence = [StoreType.CAFE, StoreType.BOUTIQUE]
+        for group, st in zip(ordered, type_sequence):
+            if st == StoreType.CAFE:
+                entry_idx = len(group) // 2
+            else:
+                entry_idx = 0
+            for i, bay in enumerate(group):
+                bay.store_type = st
+                bay.is_store_entry = (i == entry_idx)
+    else:
+        # Single group or 3+ groups: size-based default
+        for group in valid_groups:
+            if len(group) >= 3:
+                st = StoreType.CAFE
+                entry_idx = len(group) // 2
+            else:
+                st = StoreType.BOUTIQUE
+                entry_idx = 0
+            for i, bay in enumerate(group):
+                bay.store_type = st
+                bay.is_store_entry = (i == entry_idx)
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +242,7 @@ def _build_residential_bay(
         width=bay_spec.width,
         x_offset=bay_spec.x_offset,
         bay_type=BayType.WINDOW,
+        group=bay_spec.group,
     )
 
     # Window width matches upper floors: window zone × width_ratio
@@ -276,6 +306,7 @@ def _build_shopfront_bay(
         width=bay_spec.width,
         x_offset=bay_spec.x_offset,
         bay_type=BayType.SHOPFRONT,
+        group=bay_spec.group,
     )
 
     # Shopfront opening — wider than upper windows
@@ -347,6 +378,7 @@ def _build_porte_cochere_bay(
         x_offset=bay_spec.x_offset,
         bay_type=BayType.DOOR,
         porte_style=porte_style,
+        group=bay_spec.group,
     )
 
     # Porte-cochère opening — tall, nearly full height
@@ -407,6 +439,7 @@ def _build_custom_ground_bay(
         x_offset=bay_spec.x_offset,
         bay_type=BayType.CUSTOM,
         custom_bay_style=custom_bay_style,
+        group=bay_spec.group,
     )
 
     # Narrow window — same proportions as residential ground floor

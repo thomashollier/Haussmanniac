@@ -31,6 +31,7 @@ from .types import (
     StylePreset,
     Transform,
 )
+from .elements import vary_element_palette
 from .variation import Variation
 
 # FloorType → FloorHeights attribute name
@@ -114,12 +115,17 @@ def generate_building(
             setattr(grammar.profile.floors, attr, RangeParam(h, old.variation, old.sigma))
     ovr = config.overrides or BuildingOverrides()
 
+    # -- Element palette (6 RNG calls, isolated stream) -------------------------
+    v_elements = variation.derive_child_rng("elements")
+    element_palette = vary_element_palette(v_elements.rng, config.style_preset)
+
     building = BuildingNode(
         lot_width=lot_width,
         lot_depth=lot_depth,
         num_floors=num_floors,
         style_preset=style,
         seed=config.seed,
+        element_palette=element_palette,
     )
 
     # -- 1. Floor stacking -----------------------------------------------------
@@ -224,6 +230,9 @@ def generate_building(
     # -- 3b. Balcony decisions (always 2 RNG calls) ----------------------------
     decisions = BuildingDecisions()
     decisions.balcony_types = v_layout.vary_balcony_types(grammar)
+
+    # Element palette is on BuildingNode (generated earlier with isolated RNG)
+    decisions.element_palette = element_palette
 
     # -- 3c. Roof decisions (isolated via v_roof) --------------------------------
     mansard_h, roof_has_dormers, break_ratio, lower_angle, upper_angle = v_roof.vary_mansard(grammar)
