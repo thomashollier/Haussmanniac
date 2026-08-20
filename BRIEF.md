@@ -794,6 +794,30 @@ Sequenced by dependency. First typology is Paris, and only Paris.
 - Fuzz across seeds, widths and eras for invariant violations
 - Done when a generated street does not make a knowledgeable viewer flinch
 
+**Reference images — a standing requirement**
+
+Every typology ships with a corpus of reference photographs *before* it ships
+with rules. Keep them in the repository, keyed to the situation each one
+represents — street width, date, class, mid-block or corner — wherever that is
+known. They are the ground truth the rules are answerable to, and the thing to
+reach for when an argument about proportion cannot be settled from the text of
+a regulation.
+
+Render generated output alongside them routinely, not once at the end. Contact
+sheets — twenty seeds in one grid — are the cheapest way to catch the single
+broken outlier among many.
+
+Two limits, both worth respecting:
+
+- Photographs support **qualitative** comparison reliably and **measurement**
+  not at all. Perspective, lens and unknown camera position mean dimensions
+  cannot be read off them. Where a number matters, use measured surveys and
+  drawings, and record the source.
+- A visual check is a tripwire, not a passing grade. "That looks wrong" is
+  strong evidence; "that looks right" is weak. Small systematic error —
+  every window three percent too tall — is invisible to the eye and belongs to
+  the assertions instead.
+
 **Deliberately not in the first stage**
 
 - No second typology
