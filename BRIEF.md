@@ -637,6 +637,180 @@ You will want this on day one and it is painful to retrofit.
 
 ---
 
+## Confidence: what is demonstrated and what is not
+
+This document mixes things that have been built and shown to work with things
+that are still design hypotheses. Knowing which is which tells you what to hold
+loosely when reality pushes back.
+
+**Demonstrated.** The regulatory model. Implemented end to end, tested against
+the figures the decrees state, rendered, and independently corroborated — the
+envelope arithmetic reproduces the documented 28.50 m ceiling exactly, which
+was not fitted to. Deriving form from regulation is not speculative; it works,
+and it corrected a real error in the process.
+
+**Largely demonstrated.** The fitting ladder. A working implementation performs
+most of it, including insertion of a narrow special and parity-aware module
+addition, and the results hold up across wide sweeps of widths and seeds.
+
+**Asserted, on one piece of evidence.** The block as the primary unit. The
+supporting evidence is a genuine failure — buildings on a shared street each
+resolved the street width independently and their cornices did not line up —
+but the full inversion of control has never been built.
+
+**Unproven.** The rule model: phases, derived roles, layered composition. This
+is the most elegant part of the document and the part most likely to be wrong.
+Nothing here has been implemented. Treat the first typology as its test.
+
+**Speculative.** Everything about multiple typologies. One worked example and
+three sketches. The catalogue of constraints is well sourced, but that the same
+machinery spans them is a bet, not a finding.
+
+---
+
+## Paris: the specifics to pin down first
+
+Two things the rule model depends on that are named everywhere in this document
+and defined nowhere. Both are needed in the first week, and both are decisions
+rather than discoveries.
+
+### Role predicates
+
+Roles are derived from the structure alone — no enum, no input. For Paris:
+
+- **Base** — the bottom slot. Unconditional.
+- **Mezzanine** — a slot directly above the base whose height falls markedly
+  below the median habitable storey. Present only if the stack produced one.
+- **Principal** — the *tallest* habitable slot above the base and mezzanine.
+  Not "the first tall one": tallest is what the étage noble actually is. Ties
+  break to the lowest.
+- **Upper** — every slot between principal and attic, ranked upward from the
+  principal. Treatment diminishes with rank.
+- **Attic** — the slot inside the roof envelope.
+
+Note the base exclusion is load-bearing: a Paris ground floor is often taller
+than the noble floor, so "tallest slot" without qualification picks the wrong
+one.
+
+### Qualification context
+
+The read-only fact set every rule sees. Complete before qualification begins,
+and never mutated by it.
+
+*Structure* — the slot's own dimensions; its level above the pavement; index
+from bottom and from top; total storey count.
+
+*Role* — the assigned role, and rank relative to the principal floor.
+
+*Horizontal* (for bay slots) — index from the left and from the centre; whether
+it is the centre bay; distance from the entrance bay; whether it is an edge or
+inserted special; the slot's kind (opening, filler, special).
+
+*Building* — date and era; class; street width; corner or mid-block.
+
+*Envelope* — cornice height; whether the slot lies within the comble.
+
+If a rule needs a fact not on this list, that is a signal to extend the context
+deliberately rather than to reach around it.
+
+---
+
+## Build order
+
+Sequenced by dependency. First typology is Paris, and only Paris.
+
+**Invariants, from the first commit**
+
+- Phases read strictly backwards; no phase mutates what an earlier one read
+- A building never samples a block-level fact — it receives it
+- Every quantity carries its kind: absolute, proportional, or regulatory
+- Every emitted element records the rule that produced it
+- Seed plus situation yields identical output, always
+
+**0 — Foundations** (no dependencies)
+
+- Port the regulatory module unchanged
+- IR node vocabulary, with serialisation from day one
+- Trace facility: ask any node which rule emitted it. Build this *before* the
+  second rule exists
+- Site context type: street width, parcel dimensions, date, class, corner
+
+**1 — Fitting solver** (generic, reused throughout)
+
+- Fill a budget with typed slots, in one dimension
+- Slot kinds: fixed, repeating, flexible — each with minimum, preferred, maximum
+- The absorption ladder, parity-aware
+- Returns the grid *and* an account of what it did, for the trace
+- One solver serves both axes
+
+**2 — Structure phase**
+
+- Envelope from regulation: cornice height and roof envelope
+- Vertical: storeys fill the height budget
+- Horizontal: bays fill the parcel width, solved **once per building**
+- Output is an unnamed grid. No roles, no meaning
+
+**3 — Roles phase**
+
+- Apply the role predicates above
+- Reads structure only
+
+**4 — Qualification phase**
+
+- Rules map context to properties: opening type, surround, balcony, ornament,
+  material
+- A storey never lays out; it fills the shared grid
+
+**5 — Composition**
+
+- Layer rule sets: base vocabulary, period, class, site
+- Later layers win; specificity breaks ties
+- User overrides are simply a top layer, not a parallel mechanism
+- Do not generalise the bundle format yet
+
+**6 — Termination**
+
+- Comble inscribed in the envelope
+- Silhouette emitted as a polyline in the IR, not derived by the renderer
+
+**7 — Renderer** (port, do not rewrite)
+
+- Port element renderers only once the IR has stabilised
+- Move composition decisions out of the renderer on the way across
+- The renderer decides nothing arguable
+
+**8 — Block**
+
+- The channel exists from the first commit; its contents grow later
+- First a single lot with datums handed down, then frontage subdivision, shared
+  datums, party walls
+- Corner as its own short facade, not a module type
+
+**Validation**
+
+- Keep the previous implementation running as a reference oracle; diff the same
+  situations against it
+- Assert documented regulatory figures against their sources
+- Fuzz across seeds, widths and eras for invariant violations
+- Done when a generated street does not make a knowledgeable viewer flinch
+
+**Deliberately not in the first stage**
+
+- No second typology
+- No rule DSL or parser — rules are ordinary functions
+- No general binding system for block relation
+- No 3-D backend
+- No override system separate from rule layering
+
+**First week**
+
+Reproduce one real building's elevation end to end through all four phases,
+with a trace explaining every element, before generalising anything. If the
+phase model is wrong, this surfaces it in days rather than after rules have
+been built on top of it.
+
+---
+
 ## Prior art worth studying
 
 - **Split / shape grammars** — Stiny & Gips (1971) for the root idea; Wonka et
