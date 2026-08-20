@@ -90,15 +90,17 @@ def build_roof(
         rear_spec = _replace_mansard_params(rear_spec, mansard_height,
                                             break_ratio, lower_angle_deg, upper_angle_deg)
 
+    envelope = grammar.envelope
     roof = RoofNode(
         transform=Transform(position=(0.0, cornice_height, 0.0)),
         mansard_type=roof_spec.mansard_type,
         mansard_lower_angle=math.radians(roof_spec.mansard_lower_angle_deg),
         mansard_upper_angle=math.radians(roof_spec.mansard_upper_angle_deg),
+        roof_envelope=envelope.roof_envelope if envelope else None,
     )
 
     # -- Mansard slopes (four sides) -------------------------------------------
-    slopes = _build_slopes(lot_width, lot_depth, roof_spec, rear_spec)
+    slopes = _build_slopes(lot_width, lot_depth, roof_spec, rear_spec, envelope)
     roof.children.extend(slopes)
 
     # -- Dormers on front slope ------------------------------------------------
@@ -162,13 +164,19 @@ def _build_slopes(
     lot_depth: float,
     front_spec,
     rear_spec,
+    envelope=None,
 ) -> list[MansardSlopeNode]:
     """Create four mansard slope nodes.
 
-    Front slope uses the style-appropriate mansard type (STEEP/BROKEN/SHALLOW).
-    Rear and side slopes are always SHALLOW.
+    The street-facing slope carries the gabarit silhouette as an explicit
+    ``envelope_profile`` polyline, so a backend draws the shape the decree
+    actually imposed instead of re-deriving it from angles.  Rear and side
+    slopes are always SHALLOW and carry no profile.
     """
-    def _make_slope(spec, position, rotation=(0.0, 0.0, 0.0)) -> MansardSlopeNode:
+    front_profile = envelope.slope_profile() if envelope is not None else []
+
+    def _make_slope(spec, position, rotation=(0.0, 0.0, 0.0),
+                    profile=None) -> MansardSlopeNode:
         return MansardSlopeNode(
             transform=Transform(position=position, rotation=rotation),
             mansard_type=spec.mansard_type,
@@ -177,11 +185,13 @@ def _build_slopes(
             break_pct=spec.break_pct,
             height=spec.mansard_height,
             material="zinc",
+            roof_envelope=envelope.roof_envelope if envelope is not None else None,
+            envelope_profile=list(profile or []),
         )
 
     return [
-        # Front (street-facing, style-driven)
-        _make_slope(front_spec, (0.0, 0.0, 0.0)),
+        # Front (street-facing) — carries the legal envelope profile
+        _make_slope(front_spec, (0.0, 0.0, 0.0), profile=front_profile),
         # Rear (always shallow)
         _make_slope(rear_spec, (0.0, 0.0, lot_depth), (0.0, math.pi, 0.0)),
         # Left side (always shallow)
@@ -235,7 +245,13 @@ def _build_dormers(
     lower_angle_rad = math.radians(roof_spec.mansard_lower_angle_deg)
 
     # Dormer vertical bounds within the steep zone
-    if mansard_type == MansardType.STEEP:
+    if mansard_type == MansardType.DIAGONAL:
+        # A 45° face gives away one metre of depth per metre of height, so
+        # the dormer has to sit low on the slope and stay short — which is
+        # exactly why Second Empire dormers are the modest ones.
+        break_h = roof_spec.mansard_height
+        max_dormer_h = roof_spec.mansard_height * 0.55
+    elif mansard_type == MansardType.STEEP:
         max_dormer_h = roof_spec.mansard_height * 0.6
     elif mansard_type == MansardType.BROKEN:
         break_h = roof_spec.mansard_height * roof_spec.break_pct
@@ -259,6 +275,8 @@ def _build_dormers(
     # Dormer vertical position within the steep zone
     if mansard_type == MansardType.STEEP:
         dormer_y = roof_spec.mansard_height * 0.15
+    elif mansard_type == MansardType.DIAGONAL:
+        dormer_y = roof_spec.mansard_height * 0.08
     else:  # BROKEN — position so dormer top reaches ~72% of break height
         dormer_y = max(break_h * 0.10, break_h * 0.72 - dormer_h)
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+from dataclasses import dataclass, field
 from statistics import NormalDist
 
 from .grammar import HaussmannGrammar, compute_gabarit
@@ -24,6 +25,7 @@ from .types import (
     DormerStyle,
     FloorType,
     GroundFloorType,
+    OrielStyle,
     PedimentStyle,
     PorteStyle,
     RailingPattern,
@@ -31,12 +33,46 @@ from .types import (
     SurroundStyle,
 )
 
+def _weighted(rng: random.Random, items: list, cumulative_edges: list[float]):
+    """Pick from *items* using ordered thresholds. One RNG call.
+
+    The final edge is treated as a catch-all, so the last item absorbs
+    whatever probability the earlier ones leave.
+    """
+    roll = rng.random()
+    running = 0.0
+    for item, edge in zip(items, cumulative_edges):
+        running += edge
+        if roll < running:
+            return item
+    return items[-1]
+
+
 # Balcony prominence ranking for hierarchy cap
 _BALCONY_RANK: dict[BalconyType, int] = {
     BalconyType.NONE: 0,
     BalconyType.BALCONETTE: 1,
     BalconyType.CONTINUOUS: 2,
 }
+
+
+@dataclass
+class StackingResult:
+    """Outcome of stacking floors inside the gabarit budget.
+
+    Unpacks as ``(num_floors, has_entresol, heights)`` so existing call
+    sites keep working, while ``street_width`` and ``gabarit`` stay
+    available to callers that need to build the roof envelope from the
+    same street the floors were sized against.
+    """
+    num_floors: int
+    has_entresol: bool
+    heights: dict[FloorType, float] = field(default_factory=dict)
+    street_width: float = 0.0
+    gabarit: float = 0.0
+
+    def __iter__(self):
+        return iter((self.num_floors, self.has_entresol, self.heights))
 
 
 class Variation:
@@ -424,12 +460,17 @@ class Variation:
         gabarit: float | None,
         street_width_range: RangeParam | None = None,
         has_entresol_override: bool | None = None,
-    ) -> tuple[int, bool, dict[FloorType, float]]:
+        fill_gabarit: bool = True,
+    ) -> StackingResult:
         """Stack floors bottom-up within gabarit budget.
 
-        Returns ``(num_floors, has_entresol, effective_heights)``.
+        Returns a ``StackingResult`` that unpacks as
+        ``(num_floors, has_entresol, effective_heights)``.
         Always consumes exactly 8 RNG calls for sequence stability
         (1 street width + 6 floor heights + 1 entresol roll).
+
+        Storey heights are clamped up to the regulatory minimum in force
+        (2.60 m from the 1859 règlement, on hygiene grounds).
 
         When *gabarit* is provided (caller computed it from an explicit
         ``config.street_width``), the street-width RNG call is consumed
@@ -441,17 +482,23 @@ class Variation:
         swr = street_width_range or RangeParam(12.0, 4.0, 0.4)
         street_roll = self.sample_range(swr)
         if gabarit is None:
-            gabarit = compute_gabarit(street_roll)
+            gabarit = compute_gabarit(street_roll, grammar.era)
 
         # 2. Pick effective height for each of 6 floor types (always 6 RNG calls)
         floor_order = [
             FloorType.GROUND, FloorType.ENTRESOL, FloorType.NOBLE,
             FloorType.THIRD, FloorType.FOURTH, FloorType.FIFTH,
         ]
+        min_h = grammar.reglement.min_floor_height
         effective: dict[FloorType, float] = {}
         for ft in floor_order:
             rp = grammar.get_floor_range(ft)
             h = self.sample_range(rp)
+            # The 1859 hygiene minimum, on habitable storeys only. The
+            # entresol is exempt: it is a mezzanine over the shop, used for
+            # offices, storage and the concierge, and was always low.
+            if min_h > 0.0 and rp.typ > 0.0 and ft != FloorType.ENTRESOL:
+                h = max(h, min_h)
             effective[ft] = round(h, 3)
 
         # 3. Roll entresol inclusion (always 1 RNG call)
@@ -479,17 +526,61 @@ class Variation:
         else:
             include_entresol = False
 
-        # NOBLE, THIRD, FOURTH, FIFTH — if fits
+        # NOBLE, THIRD, FOURTH, FIFTH — take the storey if it fits at its
+        # sampled height, and if not, still take it at a reduced height when
+        # the budget covers its minimum.  Floor space paid; nobody left a
+        # storey's worth of gabarit unbuilt because the ceiling would have
+        # been ten centimetres lower than preferred.
         for ft in (FloorType.NOBLE, FloorType.THIRD, FloorType.FOURTH, FloorType.FIFTH):
+            rp = grammar.get_floor_range(ft)
+            floor_min = max(rp.min, min_h) if min_h > 0.0 else rp.min
             if effective[ft] <= budget + _EPS:
-                budget -= effective[ft]
-                floors_included.append(ft)
+                take = effective[ft]
+            elif floor_min <= budget + _EPS:
+                take = budget
+            else:
+                continue
+            effective[ft] = round(take, 3)
+            budget -= take
+            floors_included.append(ft)
+
+        # 5. Spend what is left of the budget.
+        # The gabarit is a ceiling, but on a percée the whole block was built
+        # up to it, which is what makes cornices and string courses run
+        # continuously from one building to the next — the unity of lines the
+        # circulaire du 21 septembre 1855 required.  Leftover height is shared
+        # out in proportion to each storey's remaining headroom, so no floor
+        # is pushed past the range its profile allows.
+        if fill_gabarit and budget > _EPS:
+            stackable = [ft for ft in floors_included if ft != FloorType.MANSARD]
+            for _ in range(3):
+                if budget <= _EPS or not stackable:
+                    break
+                headroom = {
+                    ft: max(0.0, grammar.get_floor_range(ft).max - effective[ft])
+                    for ft in stackable
+                }
+                total_headroom = sum(headroom.values())
+                if total_headroom <= _EPS:
+                    break
+                share = min(budget, total_headroom)
+                for ft in stackable:
+                    effective[ft] = round(
+                        effective[ft] + share * headroom[ft] / total_headroom, 3
+                    )
+                budget -= share
 
         # MANSARD always on top (not counted against gabarit)
         floors_included.append(FloorType.MANSARD)
         num_floors = len(floors_included)
 
-        return num_floors, include_entresol, effective
+        return StackingResult(
+            num_floors=num_floors,
+            has_entresol=include_entresol,
+            heights=effective,
+            street_width=round(street_roll, 3),
+            gabarit=gabarit,
+        )
 
     # -- Balcony types ---------------------------------------------------------
 
@@ -530,6 +621,35 @@ class Variation:
             fifth = noble
 
         return {FloorType.NOBLE: noble, FloorType.FIFTH: fifth}
+
+    # -- Oriels ----------------------------------------------------------------
+
+    def vary_oriel(self, rule, grammar: HaussmannGrammar):
+        """Choose whether this facade carries an oriel, and of what kind.
+
+        Returns ``(present, pattern, style, material, floor_span)``.
+        Always consumes exactly 5 RNG calls.  Oriels were an expensive,
+        fashionable addition, so grand buildings take them far more often
+        than back-street ones.
+
+        Call this on an isolated RNG stream — it is a late addition, and
+        keeping it separate is what stops it from shifting any other
+        decision made for the same seed.
+        """
+        vp = grammar.profile.variation
+
+        present = self.rng.random() < vp.oriel_probability
+        pattern = _weighted(self.rng,
+                            ["CENTER", "PAIR", "EVERY_BAY"],
+                            [vp.oriel_center_pct, vp.oriel_pair_pct, 1.0])
+        style = _weighted(self.rng,
+                          [OrielStyle.CANTED, OrielStyle.SQUARE, OrielStyle.BOWED],
+                          [0.55, 0.25, 1.0])
+        materials = rule.materials or ("metal",)
+        material = materials[min(int(self.rng.random() * len(materials)),
+                                 len(materials) - 1)]
+        span = 2 + int(self.rng.random() * 3)   # 2-4 storeys
+        return present, pattern, style, material, span
 
     # -- Boolean coin flips ----------------------------------------------------
 

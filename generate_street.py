@@ -27,6 +27,14 @@ LOT_RANGES = {
     "MODEST":      (7.0, 11.0),
 }
 
+# The street each front faces, in metres — this fixes the gabarit, and so
+# the cornice line, for every building along it.
+STREET_WIDTHS = {
+    "BOULEVARD":   30.0,   # a percée: 20 m of facade
+    "RESIDENTIAL": 12.0,   # 17.55 m
+    "MODEST":       8.0,   # 14.62 m
+}
+
 # ── Tree drawing ─────────────────────────────────────────────────────
 
 def _draw_tree(elements: list[str], cx_px: float, ground_y_px: float,
@@ -99,9 +107,18 @@ def _building_dims(b: BuildingNode) -> tuple[float, float, float]:
 
 def generate_street(preset: str, seed: int, trees: bool = False,
                     tree_spacing_m: float = 30.0,
-                    tree_height_range: tuple[float, float] = (15.0, 20.0)) -> None:
+                    tree_height_range: tuple[float, float] = (15.0, 20.0),
+                    era: str = "SECOND_EMPIRE",
+                    street_width: float | None = None) -> None:
     rng = random.Random(seed)
     lo, hi = LOT_RANGES[preset]
+
+    # Every building on a street faces the same street, so every building
+    # gets the same gabarit — which is what makes their cornice lines run
+    # continuously from one to the next.  The circulaire of 21 September
+    # 1855 required exactly that unity across a block.
+    if street_width is None:
+        street_width = STREET_WIDTHS[preset]
 
     # Generate buildings until we fill target width
     buildings: list[BuildingNode] = []
@@ -115,6 +132,8 @@ def generate_street(preset: str, seed: int, trees: bool = False,
             seed=s,
             lot_width=lot_width,
             profile_variation=round(variation, 2),
+            era=era,
+            street_width=street_width,
         )
         b = generate_building(config)
         buildings.append(b)

@@ -144,7 +144,16 @@ class BalconyParams:
 
 @dataclass
 class RoofParams:
-    """Mansard roof parameters."""
+    """Mansard roof parameters.
+
+    Since the comble's height is set by the gabarit envelope (see
+    :mod:`core.reglement`), ``mansard_height`` only applies when no
+    envelope is attached.  ``roof_fill`` is what varies by class: a
+    boulevard building builds its comble out to the legal maximum, a
+    back-street one does not bother.
+    """
+    roof_fill: float = 1.0            # 0-1 fraction of the legal comble built
+    comble_storeys: float = 2.0       # storeys of servants' rooms the comble holds
     mansard_height: float = 2.5
     mansard_height_short: float = 0.0  # when > 0, variation picks between short/tall
     lower_angle_deg: float = 80.0
@@ -210,6 +219,12 @@ class VariationParams:
     fifth_balcony_balconette_pct: float = 0.0  # Fifth floor: probability of balconette
     # Door bay width ratio (sampled per-building, written into BayProportions before solving)
     door_bay_width_ratio: RangeParam = field(default_factory=lambda: RangeParam(1.5, 0.5, 0.5))
+    # Oriels — only reachable at all under the 1882 decree and later.
+    # An expensive, fashionable addition, so grand frontages take them far
+    # more often than back streets do.
+    oriel_probability: float = 0.45
+    oriel_center_pct: float = 0.35      # single oriel on the middle bay
+    oriel_pair_pct: float = 0.35        # symmetric pair (remainder = every bay)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +289,7 @@ GRAND_BOULEVARD = FacadeProfile(
         dormer_style_swap_pct=0.20,
         entresol_include_pct=0.85,
         door_bay_width_ratio=RangeParam(1.5, 0.5, 0.5),
+        oriel_probability=0.55,
     ),
 )
 
@@ -283,7 +299,7 @@ RESIDENTIAL = FacadeProfile(
     typical_street_width=RangeParam(12.0, 4.0, 0.4),  # → gabarit 17.55m (mostly)
     chamfer_width=3.0,
     has_rustication=True,
-    roof=RoofParams(chimney_height=1.2),
+    roof=RoofParams(chimney_height=1.2, roof_fill=0.80, comble_storeys=1.5),
     floors=FloorHeights(
         ground=RangeParam(3.35, 0.45, 0.4),
         entresol=RangeParam(2.5, 0.3, 0.4),
@@ -319,6 +335,7 @@ RESIDENTIAL = FacadeProfile(
         porte_center_probability=0.80,
         dormer_style_swap_pct=0.20,
         door_bay_width_ratio=RangeParam(1.5, 0.5, 0.5),
+        oriel_probability=0.35,
     ),
 )
 
@@ -331,6 +348,8 @@ MODEST = FacadeProfile(
     chamfer_width=3.0,
     has_rustication=False,
     roof=RoofParams(
+        roof_fill=0.62,
+        comble_storeys=1.0,
         mansard_height=2.65,           # tall roof (with dormers)
         mansard_height_short=1.725,    # short roof (no dormers)
         dormer_width_ratio=0.25,
@@ -387,6 +406,7 @@ MODEST = FacadeProfile(
         fifth_balcony_none_pct=0.50,
         fifth_balcony_balconette_pct=0.50,
         door_bay_width_ratio=RangeParam(1.15, 0.15, 0.5),
+        oriel_probability=0.12,
     ),
 )
 
@@ -553,6 +573,8 @@ def _build_profile_from_raw(
             noble_sill_at_floor=bool(_get("balconies", "noble_sill_at_floor", True)),
         ),
         roof=RoofParams(
+            roof_fill=float(_get("roof", "roof_fill", 1.0)),
+            comble_storeys=float(_get("roof", "comble_storeys", 2.0)),
             mansard_height=float(_get("roof", "mansard_height", 2.5)),
             mansard_height_short=float(_get("roof", "mansard_height_short", 0.0)),
             lower_angle_deg=float(_get("roof", "lower_angle_deg", 80.0)),
@@ -598,6 +620,9 @@ def _build_profile_from_raw(
             fifth_balcony_none_pct=float(_get("variation", "fifth_balcony_none_pct", 0.0)),
             fifth_balcony_balconette_pct=float(_get("variation", "fifth_balcony_balconette_pct", 0.0)),
             door_bay_width_ratio=_get_range("variation", "door_bay_width_ratio", 0.5),
+            oriel_probability=float(_get("variation", "oriel_probability", 0.45)),
+            oriel_center_pct=float(_get("variation", "oriel_center_pct", 0.35)),
+            oriel_pair_pct=float(_get("variation", "oriel_pair_pct", 0.35)),
         ),
     )
 

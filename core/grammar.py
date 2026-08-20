@@ -14,11 +14,13 @@ All dimensions in metres.
 
 from __future__ import annotations
 
+import copy
 import random
 from dataclasses import dataclass
 from typing import Optional
 
 from .profile import FacadeProfile, GRAND_BOULEVARD, RangeParam
+from .reglement import Era, GabaritEnvelope, RoofEnvelope, get_reglement
 from .types import (
     BayType,
     DormerStyle,
@@ -113,23 +115,15 @@ _FLOOR_ATTR: dict[FloorType, str] = {
 # (bays.middle_floor_step, chamfer_width) and are read via self.profile.
 
 
-def compute_gabarit(street_width: float) -> float:
+def compute_gabarit(street_width: float, era: Era | str = Era.SECOND_EMPIRE) -> float:
     """Max stone facade height (cornice line) from street width.
 
-    Step-wise per the 1859/1882 règlement de voirie:
-    - street > 20m  → 20.0m facade
-    - street ≥ 9.75m → 17.55m facade
-    - street ≥ 7.8m  → 14.6m facade
-    - street < 7.8m  → 11.7m facade
+    The step table is regulatory and changes with the decree in force, so
+    the numbers live in :mod:`core.reglement`.  The default era reproduces
+    the 1859 règlement de voirie — 11.70 / 14.62 / 17.55 m by street width,
+    plus the 20 m step Haussmann added for the new wide percées.
     """
-    if street_width > 20.0:
-        return 20.0
-    elif street_width >= 9.75:
-        return 17.55
-    elif street_width >= 7.8:
-        return 14.6
-    else:
-        return 11.7
+    return get_reglement(era).facade_height_limit(street_width)
 
 
 # ---------------------------------------------------------------------------
@@ -144,8 +138,26 @@ class HaussmannGrammar:
     *typical* values and valid ranges.
     """
 
-    def __init__(self, profile: FacadeProfile | None = None) -> None:
-        self.profile = profile if profile is not None else GRAND_BOULEVARD
+    def __init__(
+        self,
+        profile: FacadeProfile | None = None,
+        era: Era | str = Era.SECOND_EMPIRE,
+    ) -> None:
+        # Copy: the pipeline resolves sampled values into the profile, and a
+        # shared preset object would carry them into the next building.
+        self.profile = copy.deepcopy(profile) if profile is not None \
+            else copy.deepcopy(GRAND_BOULEVARD)
+        self.reglement = get_reglement(era)
+        self.envelope: GabaritEnvelope | None = None
+
+    @property
+    def era(self) -> Era:
+        """Regulatory period this grammar builds under."""
+        return self.reglement.era
+
+    def set_envelope(self, envelope: GabaritEnvelope) -> None:
+        """Attach the resolved gabarit so roof rules can read it."""
+        self.envelope = envelope
 
     # -- Floor stacking -------------------------------------------------------
 
@@ -663,19 +675,32 @@ class HaussmannGrammar:
         style: StylePreset = StylePreset.RESIDENTIAL,
         is_front: bool = True,
     ) -> RoofSpec:
-        """Derive roof parameters from bay count and style preset.
+        """Derive roof parameters from the gabarit envelope, bay count and style.
 
-        Mansard types by style and orientation:
-        - BOULEVARD front:    STEEP  (75°, near-vertical, full dormer zone)
-        - RESIDENTIAL front:  BROKEN (70° lower breaking to 20° above dormers)
-        - MODEST front:       BROKEN (65° lower, dormers every other bay)
-        - All rear facades:   SHALLOW (no dormers)
+        The comble is not a free choice: it has to be inscribed inside the
+        envelope the decree in force imposes above the cornice.  When an
+        envelope is attached (``set_envelope``), its geometry decides the
+        height, the angles and the break point, and the mansard *type* is
+        read off the envelope rather than off the style preset:
+
+        - 45° diagonal (1783/84, 1859) → a single 45° face: STEEP is illegal.
+        - circular arc (1884)          → near-vertical at the eaves flattening
+                                          over the top: a BROKEN mansard.
+        - eighth arc + oblique (1902)  → steep start onto a long 45° run.
+
+        Rear and side slopes stay SHALLOW.  Without an envelope the method
+        falls back to the profile's own angle parameters.
         """
         rp = self.profile.roof
+        env = self.envelope
 
         # -- Mansard type and angles ----------------------------------------
         if not is_front:
             mansard_type = MansardType.SHALLOW
+        elif env is not None:
+            mansard_type = (MansardType.DIAGONAL
+                            if env.roof_envelope == RoofEnvelope.DIAGONAL_45
+                            else MansardType.BROKEN)
         elif style == StylePreset.BOULEVARD:
             mansard_type = MansardType.STEEP
         elif style == StylePreset.RESIDENTIAL:
@@ -684,7 +709,9 @@ class HaussmannGrammar:
             # MODEST: broken mansard (shorter break than residential)
             mansard_type = MansardType.BROKEN
 
-        if mansard_type == MansardType.STEEP:
+        if env is not None and is_front:
+            lower_angle, upper_angle, break_pct = env.mansard_angles()
+        elif mansard_type == MansardType.STEEP:
             lower_angle = rp.lower_angle_deg
             upper_angle = rp.steep_upper_angle_deg
             break_pct = 1.0                    # No break — single steep face
@@ -696,6 +723,10 @@ class HaussmannGrammar:
             lower_angle = rp.shallow_angle_deg
             upper_angle = rp.shallow_angle_deg
             break_pct = 1.0
+
+        # -- Comble height: the envelope decides it when one is attached ----
+        mansard_height = env.ridge_height if (env is not None and is_front) \
+            else rp.mansard_height
 
         # -- Dormers -------------------------------------------------------
         if mansard_type == MansardType.SHALLOW:
@@ -718,7 +749,7 @@ class HaussmannGrammar:
             mansard_type=mansard_type,
             mansard_lower_angle_deg=lower_angle,
             mansard_upper_angle_deg=upper_angle,
-            mansard_height=rp.mansard_height,
+            mansard_height=mansard_height,
             break_pct=break_pct,
             dormer_style=dormer_style,
             dormer_every_n_bays=dormer_every,

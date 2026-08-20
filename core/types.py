@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
+from .reglement import Era, RoofEnvelope
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -88,16 +90,22 @@ class SurroundStyle(Enum):
 class MansardType(Enum):
     """Mansard roof profile shapes.
 
+    DIAGONAL: A single unbroken 45° face — the comble of the 1783/84 and
+              1859 règlements, which required the roof to be inscribed
+              below a 45° diagonal springing from the eaves.  This is the
+              true Second Empire roof; dormers are cut into the face.
     STEEP:  Near-vertical lower slope (~75-80°), plenty of room for dormers.
-            The classic Parisian mansard — the lower face is almost a wall.
-    BROKEN: Very steep lower section (~70°) that breaks to a much flatter
-            upper section (~20°) above the dormer heads.  Most common type.
+            Only legal once the 1884 decree replaced the diagonal with an arc.
+    BROKEN: Very steep lower section that breaks to a much flatter upper
+            section above the dormer heads — the profile a post-1884
+            circular-arc envelope produces.
     SHALLOW: Gentle continuous slope (~35-45°) with no dormer zone.
              Used on rear facades or modest buildings.
     """
     STEEP = auto()
     BROKEN = auto()
     SHALLOW = auto()
+    DIAGONAL = auto()
 
 
 class DormerStyle(Enum):
@@ -116,6 +124,13 @@ class CustomBayStyle(Enum):
     NARROW_WINDOW = auto()  # Tall narrow rectangular window
     STONEWORK = auto()      # Rusticated stone panel with coursing
     GEOMETRIC = auto()      # Geometric diamond relief pattern
+
+
+class OrielStyle(Enum):
+    """Shape of an oriel (projecting bay window) in plan."""
+    SQUARE = auto()    # Flat front, square returns — the plainest
+    CANTED = auto()    # Splayed sides, flat front — the commonest
+    BOWED = auto()     # Curved front (a bow window proper)
 
 
 class BalconyType(Enum):
@@ -224,6 +239,28 @@ class OrnamentNode(IRNode):
 
 
 @dataclass
+class OrielNode(IRNode):
+    """A bay window projecting from the facade, carried on corbels.
+
+    Legal in Paris only from the decree of 22 July 1882, and then only
+    starting at the étage noble, projecting no more than 0.40 m, and not
+    carrying above the cornice until 1902.  Spans several floors, so it
+    hangs off the FacadeNode rather than off any one FloorNode; its
+    transform position is its bottom-left corner on the facade plane.
+    """
+    node_type: str = field(default="oriel", init=False)
+    width: float = 1.5
+    height: float = 3.0              # total vertical extent
+    projection: float = 0.40         # how far it stands off the wall
+    style: OrielStyle = OrielStyle.CANTED
+    material: str = "metal"          # metal / wood / stone
+    bay_index: int = 0               # bay it sits over
+    floor_span: int = 1              # how many storeys it runs through
+    passes_cornice: bool = False     # 1902 onward only
+    children: list[IRNode] = field(default_factory=list)
+
+
+@dataclass
 class CorniceNode(IRNode):
     """Horizontal cornice band between floors or at roofline."""
     node_type: str = field(default="cornice", init=False)
@@ -290,7 +327,15 @@ class GroundFloorNode(IRNode):
 
 @dataclass
 class MansardSlopeNode(IRNode):
-    """One face of the mansard slope."""
+    """One face of the mansard slope.
+
+    ``envelope_profile`` is the authoritative silhouette: ``(inset, height)``
+    points in metres tracing the legal gabarit from the eaves to the ridge
+    (see ``core.reglement.GabaritEnvelope.slope_profile``).  Backends should
+    draw that polyline directly.  ``lower_angle`` / ``upper_angle`` /
+    ``break_pct`` are the two-segment approximation of the same curve, kept
+    for consumers that want the classic broken-mansard description.
+    """
     node_type: str = field(default="mansard_slope", init=False)
     mansard_type: MansardType = MansardType.BROKEN
     lower_angle: float = math.radians(75)   # Steep lower slope (near-vertical)
@@ -298,6 +343,8 @@ class MansardSlopeNode(IRNode):
     break_pct: float = 0.95                 # Break as fraction of total height (1.0 = no upper segment)
     height: float = 2.8                     # Total mansard height
     material: str = "zinc"
+    roof_envelope: RoofEnvelope | None = None          # Which decree shaped it
+    envelope_profile: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -328,6 +375,7 @@ class RoofNode(IRNode):
     mansard_type: MansardType = MansardType.BROKEN
     mansard_lower_angle: float = math.radians(75)
     mansard_upper_angle: float = math.radians(20)
+    roof_envelope: RoofEnvelope | None = None   # Envelope the decree imposed
     children: list[IRNode] = field(default_factory=list)  # Slopes, dormers, chimneys
 
 
@@ -363,6 +411,9 @@ class BuildingNode(IRNode):
     num_floors: int = 6
     style_preset: StylePreset = StylePreset.RESIDENTIAL
     seed: int = 0
+    era: Era = Era.SECOND_EMPIRE          # Regulatory period that shaped it
+    street_width: float = 0.0             # Street it fronts (drives the gabarit)
+    cornice_height: float = 0.0           # Height of the stone facade (gabarit limit)
     element_palette: object | None = None  # core.elements.ElementPalette (avoids circular import)
     children: list[IRNode] = field(default_factory=list)  # Facades, RoofNode, CornerNodes
 
@@ -430,3 +481,21 @@ class BuildingConfig:
     profile_variation: float = 0.0      # 0.0 = exact, 0.0-1.0 = variation amount
     street_width: Optional[float] = None  # Street width in metres; determines gabarit
     overrides: BuildingOverrides | None = None  # Per-field overrides for seeded output
+
+    # -- Regulatory period ----------------------------------------------------
+    # The era decides the height table, the shape of the comble, and where
+    # balconies may go.  ``year`` is a convenience: when set it resolves to
+    # the era in force that year and wins over ``era``.
+    era: str | Era = Era.SECOND_EMPIRE
+    year: Optional[int] = None
+    roof_fill: Optional[float] = None   # 0-1: how far the comble builds out to its legal max
+                                        # (None = the profile's own value)
+
+    def resolved_era(self) -> Era:
+        """Return the ``Era`` this config specifies, from *year* or *era*."""
+        from .reglement import era_for_year, get_reglement
+        if self.year is not None:
+            return era_for_year(self.year)
+        if isinstance(self.era, Era):
+            return self.era
+        return get_reglement(self.era).era

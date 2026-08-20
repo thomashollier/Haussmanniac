@@ -11,7 +11,7 @@ A procedural system for generating buildings in the Parisian Haussmann style. A 
 ```
 ┌─────────────────────────────────────────────────┐
 │                  CORE (pure Python)              │
-│  profile → grammar → generator → IR tree        │
+│  reglement → profile → grammar → generator → IR │
 └──────────────────┬──────────────────────────────┘
                    │  IR = tree of typed dataclasses
           ┌────────┼────────┐
@@ -23,6 +23,8 @@ A procedural system for generating buildings in the Parisian Haussmann style. A 
 ```
 
 ### Layers
+
+0. **Regulation** (`core/reglement.py`) — The building code as data. Street width and the decree in force determine the cornice line and the shape of the roof above it; a separate ordinance determines where balconies may go. Everything vertical derives from here rather than being sampled.
 
 1. **Generative Core** (`core/`) — Pure Python, zero external dependencies. Contains Haussmann rules, proportions, profiles, and assembly logic. Outputs a tree of parameterized IR nodes.
 
@@ -40,12 +42,14 @@ haussmann/
 ├── pyproject.toml
 ├── core/
 │   ├── __init__.py
+│   ├── reglement.py       # Era, Reglement, GabaritEnvelope, balcony + oriel rules
 │   ├── types.py           # IR dataclasses, enums, BuildingConfig, BuildingOverrides
 │   ├── profile.py         # FacadeProfile dataclass, presets, vary_profile()
 │   ├── grammar.py         # HaussmannGrammar — proportional rules from profile
 │   ├── generator.py       # Top-level pipeline: config → IR tree
 │   ├── facade.py          # Facade composition (bay layout, windows, ornament)
 │   ├── floor.py           # Floor stacking logic
+│   ├── oriel.py           # Projecting bay windows (1882 onward)
 │   ├── roof.py            # Mansard roof, dormers, chimneys
 │   ├── ground_floor.py    # Shopfronts, porte-cochere, rustication
 │   └── variation.py       # Seeded RNG (Variation class)
@@ -54,6 +58,8 @@ haussmann/
 │   └── svg.py             # SVG 2D facade renderer
 ├── tests/
 │   ├── __init__.py
+│   ├── test_reglement.py  # Height tables, envelope geometry, balcony rule
+│   ├── test_oriel.py      # Oriel legality, placement, and geometry
 │   ├── test_types.py
 │   ├── test_grammar.py
 │   ├── test_generator.py
@@ -66,6 +72,74 @@ haussmann/
 ├── examples/output/       # Reference SVGs and PNGs
 └── output/                # Working output directory
 ```
+
+---
+
+## The Regulatory Model
+
+The haussmannian building is the residue of a legal envelope, not a chosen style. Two inputs — **street width** and **the decree in force** — fix the whole vertical composition. `core/reglement.py` encodes this; the generator derives from it instead of sampling.
+
+### Eras
+
+`Era` selects which decree applies. Set it directly (`era="ALPHAND"`) or give a `year` and let it resolve (`year=1868`).
+
+| Era | Decree | Facade height by street width | Comble envelope |
+|---|---|---|---|
+| `ROYAL` (1784–1859) | Déclaration royale 1783 / lettres patentes 1784 | <7.80→11.70, <9.75→14.62, else 17.55 | 45° diagonal from the eaves |
+| `SECOND_EMPIRE` (1859–1884) | Règlement 27 juillet 1859 | as above, **+ >20 m → 20.00** | 45° diagonal |
+| `ALPHAND` (1884–1902) | Décret 23 juillet 1884 | 12 / 15 / 18 / 20 | **circular arc**, radius by street width |
+| `BONNIER` (1902–1914) | Décret 13 août 1902 | 12 / 15 / 18 / 20 | **eighth-of-circle arc, then a 45° oblique** |
+
+**Default is `SECOND_EMPIRE`** — Haussmann's own period.
+
+### The comble is not a free parameter
+
+Before 1884 the roof had to be inscribed below a 45° diagonal springing from the eaves, so a near-vertical mansard was *illegal*. The 1884 decree replaced that diagonal with a circular arc — vertical at the eaves, flattening over the top — which is what let builders add a storey set back from the facade, and where the familiar steep Parisian silhouette comes from. 20 m of facade plus an 8.50 m comble is the documented 28.50 m ceiling, which `compute_envelope` reproduces exactly.
+
+`GabaritEnvelope.slope_profile()` returns the silhouette as `(inset, height)` points; the front `MansardSlopeNode` carries it in `envelope_profile` and backends draw that polyline directly. `mansard_angles()` gives the same curve as the classic `(lower, upper, break_pct)` triple.
+
+The decree sets a ceiling, not a target. Two builder-side constraints bring the comble back to what was actually built: `RoofParams.roof_fill` (fraction of the legal maximum) and `RoofParams.comble_storeys` (how many floors of chambres de bonne the programme needs). `legal_ridge_height` records what the decree would have allowed.
+
+### Balconies follow the 1823 ordinance
+
+Balconies may project at most **0.80 m** and only at **6 m or more** above the pavement — never relaxed under Haussmann, which is exactly why these facades have so little relief and run to *balcons filants*. `balcony_rule()` takes the floor levels and returns which floors carry them:
+
+- The **first floor clearing 6 m** takes the lower continuous balcony. With an entresol that lands on the étage noble; without one it moves up a storey — which is why modest buildings have their balcony higher, and it now falls out of the rule rather than being faked with probabilities.
+- The **topmost eligible floor** takes the second continuous line.
+- **Individual balconettes** on the floors between appear only under `ALPHAND`/`BONNIER`, matching the balcons individuels of the late period.
+
+Balcony depths are clamped to the 0.80 m legal maximum in `facade.py`.
+
+### Oriels — the 1882 relaxation
+
+Paris banned projections over the street from the edicts of **1607** and **1667** until the decree of **22 July 1882**. That ban is why the haussmannian facade is flat, and it's the same instinct as the 0.80 m balcony cap. An oriel is therefore the clearest date-stamp on a Paris facade: a flat wall reads pre-1882, a rippling one reads Belle Époque.
+
+`core/oriel.py` builds them; `oriel_rule()` in `reglement.py` decides whether they're allowed and within what limits:
+
+| Provision | Rule |
+|---|---|
+| Earliest date | 1882 (`ALPHAND` onward) — never on `ROYAL`/`SECOND_EMPIRE` |
+| Start floor | the étage noble (`oriel_start_floor`) |
+| Projection | ≤ 0.40 m |
+| Above the cornice | forbidden until 1902, permitted from `BONNIER` |
+| Materials | metal/wood only under 1882's demountability rule; stone from 1902 |
+
+`OrielNode` hangs off the `FacadeNode` (it spans several storeys) and carries a `WindowNode` per storey as its front glazing, so backends don't re-derive it. `OrielStyle` is `SQUARE` / `CANTED` / `BOWED`; placement is `CENTER`, `PAIR`, or `EVERY_BAY`, and never lands on the porte-cochère bay.
+
+Frequency is a class marker — `VariationParams.oriel_probability` is 0.55 on `BOULEVARD`, 0.35 `RESIDENTIAL`, 0.12 `MODEST`.
+
+Oriels run on their own `derive_child_rng("oriel")` stream, so adding them left every pre-1882 seed's output untouched.
+
+**Note on 1893:** masonry oriels became legal mid-way through the Alphand era, which the four-way era split can't express; masonry is modelled as arriving with the 1902 règlement.
+
+### Other encoded provisions
+
+- **Minimum storey height 2.60 m** (1859, hygiene) — enforced during floor stacking. The entresol is exempt: it was a low mezzanine for offices, storage, and the concierge.
+- **Courtyards ≥ 30 m²** (1884) — recorded, not yet used.
+
+### Documented vs. modelled
+
+Height tables, the 0.80 m / 6 m balcony rule, the 2.60 m minimum, the three envelope geometries, and the 8.50 m arc radius are all documented. Two values are inferred and marked `MODELLED` in the source: the arc radius for streets narrower than 20 m (scaled from the 8.50 m anchor) and the cap on the pre-1884 comble, where the text says only "avec une hauteur maximale".
 
 ---
 
@@ -96,14 +170,17 @@ haussmann/
 
 ### Balcony Rules
 
-- **Noble**: continuous balcony spanning bay extent (pier-to-pier, not full facade width), windows touch balcony (sill=0)
-- **3rd/4th**: no balconies
-- **5th**: continuous balcony spanning bay extent (GRAND/RESIDENTIAL); probabilistic for MODEST
-- **MODEST**: probabilistic per-building — noble: 40% none / 30% balconette / 30% continuous; 5th: 50% none / 50% balconette (capped at noble rank)
+Which floors carry balconies is decided by the 1823 ordinance (see **The Regulatory Model** above), not by a fixed floor list. The RNG still decides *how prominent* each of the two lines is:
+
+- **Lower line**: the first floor clearing 6 m — the étage noble when there is an entresol, a storey higher when there isn't
+- **Upper line**: the topmost eligible floor
+- **Floors between**: individual balconettes under `ALPHAND`/`BONNIER` only
+- **MODEST**: probabilistic prominence per building — 40% none / 30% balconette / 30% continuous on the lower line; the upper line is capped at the lower line's rank
+- Continuous balconies span the bay extent (pier-to-pier, not full facade width); noble windows touch the balcony (sill=0)
 
 ### Roof
 
-- **Mansard type**: BROKEN (most common), STEEP (grand), SHALLOW (rear)
+- **Shape**: derived from the gabarit envelope — see **The Regulatory Model**. `MansardType.DIAGONAL` for the pre-1884 45° comble, `BROKEN` for the post-1884 arc; `SHALLOW` on rear/side slopes. `STEEP` remains for envelope-free use.
 - **Dormers**: 6 styles (PEDIMENT_TRIANGLE, PEDIMENT_CURVED, POINTY_ROOF, OVAL, FLAT_SLOPE, ROUND_SLOPE)
 - **Dormer variety**: GRAND/RESIDENTIAL swap to any of 6 styles per seed; MODEST constrained to FLAT_SLOPE/ROUND_SLOPE
 - **Dormer placement**: EVERY_BAY, EVERY_OTHER, BETWEEN_BAYS, CENTER_ONLY
@@ -242,7 +319,25 @@ BuildingNode          # Root
 - [x] Continuous balconies span bay pier-to-pier extent
 - [x] Probabilistic balcony types for MODEST (via BuildingDecisions)
 
+### Phase 7: Regulatory Model -- DONE
+- [x] `core/reglement.py` — Era, Reglement, height tables for 4 decrees
+- [x] `GabaritEnvelope` — three roof envelope geometries (45° diagonal, circular arc, eighth-arc + oblique)
+- [x] Comble height, angles and break point derived from the envelope, not sampled
+- [x] `envelope_profile` polyline on `MansardSlopeNode`; SVG draws it directly
+- [x] Balcony floors derived from the 1823 ordinance (6 m minimum, 0.80 m cap)
+- [x] 1859 minimum storey height enforced in floor stacking (entresol exempt)
+- [x] `HaussmannGrammar` copies its profile — no more mutation of shared presets
+- [x] `tests/test_reglement.py` — 57 tests over the tables, geometry, and rules
+
+### Phase 8: Oriels -- DONE
+- [x] `oriel_rule()` — legality, start floor, projection cap, cornice limit, materials
+- [x] `core/oriel.py` — placement patterns, spans, per-storey front glazing
+- [x] `OrielNode` + `OrielStyle` in the IR; SVG renders body, returns, corbels, cap, crown
+- [x] Isolated `oriel` RNG stream — pre-1882 seeds produce identical output
+- [x] `tests/test_oriel.py` — 23 tests, including the negative case for every pre-1882 facade
+
 ### Future
+- [ ] Street-level cornice and balcony alignment (circulaire du 21 septembre 1855)
 - [ ] Blender backend (`backends/blender/`)
 - [ ] USD backend (`backends/usd/`)
 - [ ] LOD system
@@ -275,8 +370,15 @@ BuildingNode          # Root
 from core.generator import generate_building
 from core.types import BuildingConfig
 
-# Generate with defaults (RESIDENTIAL, seed 42)
+# Generate with defaults (RESIDENTIAL, seed 42, Second Empire)
 building = generate_building(BuildingConfig())
+
+# The same building under each decree — 45° comble vs. curved comble
+for era in ("SECOND_EMPIRE", "ALPHAND", "BONNIER"):
+    b = generate_building(BuildingConfig(seed=42, era=era, street_width=30.0))
+
+# Or give it a date and let the era resolve
+b = generate_building(BuildingConfig(seed=42, year=1868))
 
 # Modest building, seed 0, with overrides
 from core.types import BuildingOverrides, PorteStyle

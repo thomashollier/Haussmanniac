@@ -47,6 +47,8 @@ from core.types import (
     IRNode,
     MansardSlopeNode,
     MansardType,
+    OrielNode,
+    OrielStyle,
     OrnamentLevel,
     OrnamentNode,
     Orientation,
@@ -90,6 +92,11 @@ COLORS = {
     "pier_edge": "#DDD4C4",     # Edge pier fill — same as interior piers
     "custom_bay_wall": "#D6CCB8",  # Slightly darker/warmer tint for custom bay background
     "pier_line": "#C0B4A0",     # Pier outline
+    "oriel_stone": "#DED2BE",    # Masonry oriel — matches the facade course
+    "oriel_metal": "#6F7A78",    # Zinc / cast iron, the demountable kind
+    "oriel_wood": "#7A6146",     # Painted joinery
+    "oriel_cheek": "#C4B9A5",    # Side return, turned away from the light
+    "oriel_cap": "#C8BCA6",      # Cornice slab over the oriel
     "sky": "#D6E8F0",
     "ground": "#8A9A7A",
     "outline": "#4A4038",
@@ -321,6 +328,12 @@ def _render_svg_inner(
     if roof:
         cornice_band_h = 0.20  # roofline cornice visual height
         _draw_roof(ctx, roof, facade_w, total_h + cornice_band_h, roof_h)
+
+    # -- Oriels last: they stand in front of everything, and after 1902
+    #    they are allowed to overlap the roof ---
+    for child in facade.children:
+        if isinstance(child, OrielNode):
+            _draw_oriel(ctx, child)
 
     # -- Dimension labels ---
     if show_labels:
@@ -1085,7 +1098,12 @@ def _draw_roof(ctx: SVGContext, roof: RoofNode, facade_w: float, cornice_h: floa
     roof_w = facade_w + roof_overhang * 2
     # Shift x origin so the roof is centered over the facade
     ctx.x_origin -= ctx.px(roof_overhang)
-    if mansard_type == MansardType.STEEP:
+    if front_slope.envelope_profile:
+        # The gabarit envelope is authoritative — draw the silhouette the
+        # decree imposed rather than re-deriving one from angles.
+        _draw_envelope_mansard(ctx, roof_w, cornice_h, roof_h,
+                               front_slope.envelope_profile)
+    elif mansard_type == MansardType.STEEP:
         _draw_steep_mansard(ctx, roof_w, cornice_h, roof_h, lower_angle)
     elif mansard_type == MansardType.BROKEN:
         _draw_broken_mansard(ctx, roof_w, cornice_h, roof_h, lower_angle, upper_angle, break_pct)
@@ -1106,6 +1124,132 @@ def _draw_roof(ctx: SVGContext, roof: RoofNode, facade_w: float, cornice_h: floa
             dx = child.transform.position[0]
             dy = cornice_h + child.transform.position[1]
             _draw_dormer(ctx, child, dx, dy)
+
+
+_ORIEL_BODY = {
+    "stone": "oriel_stone",
+    "metal": "oriel_metal",
+    "wood": "oriel_wood",
+}
+
+
+def _draw_oriel(ctx: SVGContext, oriel: OrielNode):
+    """Draw a projecting bay window in front elevation.
+
+    The oriel stands in front of the wall, so it is drawn as a solid mass
+    that occludes what is behind it: a body spanning the bay and its
+    flanking piers, side returns shaded because they turn away from the
+    light, its own glazing on the front face, corbels carrying it, and a
+    cornice slab on top.
+    """
+    x = oriel.transform.position[0]
+    y = oriel.transform.position[1]
+    w = oriel.width
+    h = oriel.height
+    body = COLORS[_ORIEL_BODY.get(oriel.material, "oriel_metal")]
+
+    # ``w`` is the whole bay module the oriel occupies.  The side returns
+    # are carved out of it and read as the depth of the projection.
+    cheek = min(max(0.22, oriel.projection * 0.7), w * 0.22)
+    front_l, front_r = x + cheek, x + w - cheek
+    rx = 4 if oriel.style == OrielStyle.BOWED else 0
+
+    # -- Body ----------------------------------------------------------------
+    ctx.rect(x, y, w, h, COLORS["oriel_stone"],
+             stroke=COLORS["cornice_stroke"], stroke_w=0.7, rx=rx)
+
+    # -- Side returns, turned away from the light -----------------------------
+    for cx in (x, front_r):
+        ctx.rect(cx, y, cheek, h, COLORS["oriel_cheek"], stroke_w=0.4, rx=rx)
+        # A narrow light in each return
+        ctx.rect(cx + cheek * 0.25, y + h * 0.08, cheek * 0.5, h * 0.84,
+                 COLORS["window"], stroke=body, stroke_w=0.5)
+        if oriel.style == OrielStyle.CANTED:
+            # The fold where the splayed side meets the front face
+            fold = cx + (cheek if cx == x else 0.0)
+            ctx.line(fold, y, fold, y + h, COLORS["cornice_stroke"], 0.6)
+
+    # -- Front glazing, one light per storey ---------------------------------
+    front_w = front_r - front_l
+    for child in oriel.children:
+        if not isinstance(child, WindowNode):
+            continue
+        wy = y + child.transform.position[1]
+        gw = max(child.width, front_w * 0.86)
+        wx = x + (w - gw) / 2
+        ctx.rect(wx, wy, gw, child.height, COLORS["window"], stroke=body, stroke_w=1.0)
+        for k in (1, 2):
+            mx = wx + gw * k / 3
+            ctx.line(mx, wy, mx, wy + child.height, body, 0.7)
+        ctx.line(wx, wy + child.height * 0.62, wx + gw, wy + child.height * 0.62, body, 0.5)
+
+    # -- Corbels carrying it --------------------------------------------------
+    corbel_h = min(0.6, max(0.3, h * 0.08))
+    ctx.polygon(
+        [(x, y), (x + w, y),
+         (x + w - cheek * 1.4, y - corbel_h), (x + cheek * 1.4, y - corbel_h)],
+        COLORS["oriel_cap"], stroke=COLORS["cornice_stroke"], stroke_w=0.6,
+    )
+    for bx in (x + w * 0.32, x + w * 0.68):
+        ctx.line(bx, y, bx, y - corbel_h * 0.7, COLORS["cornice_stroke"], 0.8)
+
+    # -- Cornice slab on top --------------------------------------------------
+    cap_h = min(0.32, max(0.18, h * 0.05))
+    ctx.rect(x - 0.10, y + h, w + 0.20, cap_h,
+             COLORS["oriel_cap"], stroke=COLORS["cornice_stroke"], stroke_w=0.7)
+
+    if oriel.passes_cornice:
+        # 1902: the projection carries on above the cornice, and generally
+        # ends in a little zinc roof of its own.
+        crown = min(1.0, max(0.45, h * 0.10))
+        ctx.polygon(
+            [(x - 0.10, y + h + cap_h),
+             (x + w + 0.10, y + h + cap_h),
+             (x + w / 2, y + h + cap_h + crown)],
+            COLORS["roof_zinc"], stroke=COLORS["cornice_stroke"], stroke_w=0.5,
+        )
+
+
+def _draw_envelope_mansard(ctx: SVGContext, w: float, y0: float, h: float,
+                           profile: list[tuple[float, float]]):
+    """Draw the comble from its gabarit envelope polyline.
+
+    *profile* is ``(inset, height)`` in metres from the eaves, as produced
+    by ``core.reglement.GabaritEnvelope.slope_profile``.  It is mirrored
+    about the centre to give the full front silhouette: a straight 45°
+    face under the pre-1884 diagonal, a curve that starts near-vertical
+    and flattens under the 1884 arc, and an arc running onto a 45° oblique
+    under the 1902 rule.
+    """
+    if not profile:
+        return
+
+    # Scale the profile to the height actually built, in case the roof was
+    # capped below the envelope's own ridge.
+    top = max((p[1] for p in profile), default=0.0)
+    k = (h / top) if top > 1e-9 else 1.0
+    pts_m = [(inset * k, height * k) for inset, height in profile]
+
+    # Never let the two sides cross on a narrow facade.
+    max_inset = max(0.0, w / 2 - 0.15)
+    pts_m = [(min(inset, max_inset), height) for inset, height in pts_m]
+
+    left = [(inset, y0 + height) for inset, height in pts_m]
+    right = [(w - inset, y0 + height) for inset, height in reversed(pts_m)]
+    ctx.polygon(left + right, COLORS["roof_zinc"], stroke_w=0.6)
+
+    # Zinc seams follow the slope, converging as the roof narrows.
+    ridge_inset = pts_m[-1][0]
+    n_seams = 8
+    for i in range(1, n_seams):
+        sx = i * w / n_seams
+        top_sx = ridge_inset + i * (w - 2 * ridge_inset) / n_seams
+        ctx.line(sx, y0, top_sx, y0 + h, COLORS["roof_slope"], 0.3)
+
+    # Mark the break where the envelope changes law (arc onto oblique).
+    if len(pts_m) > 2:
+        bx, by = pts_m[-2]
+        ctx.line(bx, y0 + by, w - bx, y0 + by, COLORS["roof_slope"], 0.4)
 
 
 def _draw_steep_mansard(ctx: SVGContext, w: float, y0: float, h: float, angle: float):

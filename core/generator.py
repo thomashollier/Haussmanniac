@@ -15,8 +15,11 @@ from .facade import build_facade
 from .floor import build_floor_stack, total_height
 from .grammar import HaussmannGrammar, compute_gabarit
 from .profile import RangeParam, get_profile, vary_profile
+from .oriel import build_oriels
+from .reglement import balcony_rule, compute_envelope, get_reglement, oriel_rule
 from .roof import build_roof
 from .types import (
+    BalconyType,
     BayType,
     BuildingConfig,
     BuildingDecisions,
@@ -24,7 +27,9 @@ from .types import (
     BuildingOverrides,
     CornerNode,
     CustomBayStyle,
+    FloorNode,
     FloorType,
+    GroundFloorNode,
     GroundFloorType,
     Orientation,
     PorteStyle,
@@ -45,6 +50,44 @@ _FLOOR_TYPE_TO_ATTR: dict[FloorType, str] = {
 }
 
 
+def _derive_balcony_types(
+    floor_nodes: list,
+    era,
+    prominence: dict[FloorType, BalconyType],
+) -> dict[FloorType, BalconyType]:
+    """Assign balcony treatments to floors under the 1823 ordinance.
+
+    *floor_nodes* is the stacked facade, bottom-up.  *prominence* is the
+    per-building roll from ``vary_balcony_types`` — its two values are read
+    as "how prominent is the lower line" and "how prominent is the upper
+    line", and are applied to whichever floors the rule makes eligible.
+
+    Every floor type present gets an explicit entry, so the legal rule —
+    not the profile's ``continuous_floors`` list — has the last word.
+    """
+    levels: list[float] = []
+    types: list[FloorType] = []
+    for node in floor_nodes:
+        if isinstance(node, GroundFloorNode):
+            levels.append(node.transform.position[1])
+            types.append(FloorType.GROUND)
+        elif isinstance(node, FloorNode):
+            levels.append(node.y_offset)
+            types.append(node.floor_type)
+
+    rule = balcony_rule(levels, era)
+    result: dict[FloorType, BalconyType] = {ft: BalconyType.NONE for ft in types}
+
+    ranked = [prominence.get(FloorType.NOBLE, BalconyType.CONTINUOUS),
+              prominence.get(FloorType.FIFTH, BalconyType.CONTINUOUS)]
+    for k, idx in enumerate(rule.continuous):
+        result[types[idx]] = ranked[min(k, len(ranked) - 1)]
+    for idx in rule.individual:
+        if result[types[idx]] == BalconyType.NONE:
+            result[types[idx]] = BalconyType.BALCONETTE
+    return result
+
+
 def generate_building(
     config: BuildingConfig,
     grammar: HaussmannGrammar | None = None,
@@ -56,6 +99,7 @@ def generate_building(
     corner chamfers — ready to be consumed by a backend adapter.
     """
     style = StylePreset[config.style_preset]
+    era = config.resolved_era()
 
     # -- Resolve profile -------------------------------------------------------
     if grammar is None:
@@ -71,7 +115,12 @@ def generate_building(
         if config.profile_variation > 0:
             profile = vary_profile(profile, config.seed, config.profile_variation)
 
-        grammar = HaussmannGrammar(profile=profile)
+        grammar = HaussmannGrammar(profile=profile, era=era)
+    else:
+        # Caller-supplied grammar: it still gets this run's era, and
+        # HaussmannGrammar has already copied the profile so the sampled
+        # values written below cannot leak back into a shared preset.
+        grammar.reglement = get_reglement(era)
 
     # -- Resolve defaults from profile when not specified -------------------------
     lot_width = config.lot_width if config.lot_width is not None else grammar.profile.typical_lot_width.typ
@@ -91,29 +140,52 @@ def generate_building(
     v_roof_detail = variation.derive_child_rng("roof_detail")
 
     # -- Gabarit-driven floor count derivation ------------------------------------
+    street_width = config.street_width if config.street_width is not None else 0.0
     if config.num_floors is not None:
         # Hard override — skip gabarit derivation entirely
         num_floors = config.num_floors
         has_entresol = config.has_entresol if config.has_entresol is not None else grammar.profile.has_entresol
+        if not street_width:
+            street_width = grammar.profile.typical_street_width.typ
     else:
         # Bottom-up stacking: gabarit budget → floor count + heights
         if config.street_width is not None:
-            gabarit = compute_gabarit(config.street_width)
+            gabarit = compute_gabarit(config.street_width, era)
             street_range = None  # explicit street width — skip range pick
         else:
             gabarit = None
             street_range = grammar.profile.typical_street_width
 
-        num_floors, has_entresol, effective_heights = v_stacking.vary_floor_stacking(
+        stacking = v_stacking.vary_floor_stacking(
             grammar, gabarit, street_range,
             has_entresol_override=config.has_entresol,
         )
+        num_floors, has_entresol = stacking.num_floors, stacking.has_entresol
+        if config.street_width is None:
+            street_width = stacking.street_width
         # Write effective heights into grammar for downstream floor/facade code
-        for ft, h in effective_heights.items():
+        for ft, h in stacking.heights.items():
             attr = _FLOOR_TYPE_TO_ATTR[ft]
             old = getattr(grammar.profile.floors, attr)
             setattr(grammar.profile.floors, attr, RangeParam(h, old.variation, old.sigma))
     ovr = config.overrides or BuildingOverrides()
+
+    # -- Gabarit envelope: the legal solid this frontage may occupy ------------
+    # Street width fixes the cornice line; the decree in force fixes the
+    # shape of the comble above it.  Everything the roof does follows from
+    # this object rather than from free-floating random parameters.
+    envelope = compute_envelope(
+        street_width=street_width,
+        era=era,
+        parcel_depth=lot_depth,
+        roof_fill=(config.roof_fill if config.roof_fill is not None
+                   else grammar.profile.roof.roof_fill),
+        # The comble holds servants' rooms; a building takes the storeys it
+        # needs rather than every metre the decree would allow.
+        max_ridge=(grammar.profile.roof.comble_storeys
+                   * grammar.profile.floors.mansard.typ),
+    )
+    grammar.set_envelope(envelope)
 
     # -- Element palette (6 RNG calls, isolated stream) -------------------------
     v_elements = variation.derive_child_rng("elements")
@@ -125,6 +197,8 @@ def generate_building(
         num_floors=num_floors,
         style_preset=style,
         seed=config.seed,
+        era=era,
+        street_width=round(street_width, 3),
         element_palette=element_palette,
     )
 
@@ -228,14 +302,34 @@ def generate_building(
         gf_type = ovr.ground_floor_type
 
     # -- 3b. Balcony decisions (always 2 RNG calls) ----------------------------
+    # Where balconies may go is not a style choice: the ordinance of 1823
+    # allows them only at 6 m or more above the pavement, and never more
+    # than 0.80 m deep.  That rule is what puts the balcon filant on the
+    # étage noble of a building with an entresol, and a storey higher on
+    # one without.  The RNG still decides how prominent each line is.
     decisions = BuildingDecisions()
-    decisions.balcony_types = v_layout.vary_balcony_types(grammar)
+    decisions.balcony_types = _derive_balcony_types(
+        floor_nodes, era, v_layout.vary_balcony_types(grammar)
+    )
 
     # Element palette is on BuildingNode (generated earlier with isolated RNG)
     decisions.element_palette = element_palette
 
     # -- 3c. Roof decisions (isolated via v_roof) --------------------------------
-    mansard_h, roof_has_dormers, break_ratio, lower_angle, upper_angle = v_roof.vary_mansard(grammar)
+    # The comble's height and angles come from the gabarit envelope, not
+    # from free sampling: above the cornice the decree in force is what
+    # decides the silhouette.  The RNG calls are still made — they keep the
+    # stream stable and still choose whether a modest building bothers
+    # building its comble out to the legal maximum.
+    _, roof_has_dormers, _, _, _ = v_roof.vary_mansard(grammar)
+
+    mansard_h = envelope.ridge_height
+    if not roof_has_dormers:
+        # The "short roof" branch: built well below the legal envelope,
+        # too low to take dormers.
+        mansard_h = round(envelope.ridge_height * 0.62, 3)
+    lower_angle, upper_angle, break_ratio = envelope.mansard_angles()
+
     if ovr.mansard_height is not None:
         mansard_h = ovr.mansard_height
     if ovr.break_ratio is not None:
@@ -279,6 +373,26 @@ def generate_building(
         custom_bay_style=custom_bay_style,
         decisions=decisions,
     )
+    # -- 4b. Oriels (isolated stream — a late addition that must not disturb
+    #        any decision an existing seed already made) --------------------
+    v_oriel = variation.derive_child_rng("oriel")
+    oriels = build_oriels(
+        floor_nodes=floor_nodes,
+        bay_layout=front_bay_layout,
+        rule=oriel_rule(
+            floor_levels=[n.transform.position[1] for n in floor_nodes],
+            floor_names=[
+                FloorType.GROUND.name if isinstance(n, GroundFloorNode) else n.floor_type.name
+                for n in floor_nodes
+            ],
+            cornice_height=total_height(floor_nodes),
+            era=era,
+        ),
+        variation=v_oriel,
+        grammar=grammar,
+        door_bay_index=door_bay_idx,
+    )
+    front_facade.children.extend(oriels)
     building.children.append(front_facade)
 
     # -- 5. Side facades (simplified — fewer bays, less ornament) --------------

@@ -159,13 +159,18 @@ def _populate_upper_floor(
         has_balcony = grammar.has_continuous_balcony(ft)
         has_balconette = grammar.has_balconette(ft)
 
+    # The ordinance of 1823 caps any projection over the street at 0.80 m,
+    # and was never relaxed under Haussmann — which is why these facades
+    # have so little relief.
+    max_projection = grammar.reglement.max_balcony_projection
+
     # Continuous balcony spans the full facade
     if has_balcony:
         railing_pattern = variation.vary_railing_pattern(ft, grammar)
         balcony = BalconyNode(
             transform=Transform(position=(0.0, 0.0, 0.0)),
             width=facade_width,
-            depth=grammar.profile.balconies.balcony_depth,
+            depth=min(grammar.profile.balconies.balcony_depth, max_projection),
             is_continuous=True,
             railing_pattern=railing_pattern,
             railing_height=grammar.get_railing_height(),
@@ -235,7 +240,7 @@ def _populate_upper_floor(
                 balconette = BalconyNode(
                     transform=Transform(position=(0.0, sill_height, 0.0)),
                     width=bay_spec.width,
-                    depth=grammar.profile.balconies.balconette_depth,
+                    depth=min(grammar.profile.balconies.balconette_depth, max_projection),
                     is_continuous=False,
                     railing_pattern=variation.vary_railing_pattern(ft, grammar),
                     railing_height=grammar.get_railing_height(),
