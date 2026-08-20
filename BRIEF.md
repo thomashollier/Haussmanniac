@@ -312,6 +312,118 @@ compose in.
 
 ---
 
+## Chronology: features appearing and disappearing
+
+A vocabulary is not static across a century. Ironwork, sculpture, socle
+treatment and shopfronts all turn over, at different rates, and a building is
+datable precisely because they do. The system has to represent that, and the
+obvious way — sorting features into named periods — is the wrong one.
+
+### Two chronologies that do not align
+
+Regulation changes on decree dates. Style changes on political and cultural
+ones. In Paris the regulatory hinges are 1859, 1884 and 1902; the stylistic
+ones are around 1848, 1853 and 1870. Force a single period enum to carry both
+and its boundaries will be wrong for one of them.
+
+Worse, a period enum cannot represent the ordinary case: the building that kept
+its outdated ironwork for twenty years after the fashion moved on. That is most
+buildings.
+
+### Date windows, not periods
+
+Attach the date to the **feature variant**, not to the building:
+
+- each variant carries an earliest year, a period of peak prevalence, and a
+  latest year
+- a building of year *Y* sees the variants whose windows contain *Y*, weighted
+  by prevalence at *Y*
+- periods survive as documentation labels, never as something the code branches
+  on
+
+The moment a rule reads `period == SECOND_EMPIRE` the enum is back and the
+straggler building has become unrepresentable.
+
+### Two mechanisms, not one
+
+- **Legality is a step function.** Oriels are illegal in 1881 and legal in
+  1882. Binary, sourced, testable — the mechanism the regulatory model already
+  implements.
+- **Fashion is a distribution.** Mascarons do not appear on a date; they grow
+  common through the 1870s and elaborate through the 1890s. That wants a ramp,
+  a peak and a decline.
+
+Conflating them gives you streets where every facade of a given year is
+suddenly identical.
+
+### Adoption lags down the class ladder
+
+The detail most systems miss. A feature appears on grand frontages first and
+reaches modest streets ten to twenty years later, if ever — and modest
+buildings *retain* superseded forms long after they have gone from the
+boulevards. So availability is a function of `(feature, year, class)`, not
+`(feature, year)`. A grand building and a modest building both built in 1885
+are not stylistic contemporaries.
+
+### Construction date is not observation date
+
+Where street-level realism comes from. Buildings are altered: shopfronts turn
+over every generation or two, ironwork gets added, and combles were
+demonstrably raised — the later regulations held the cornice line while
+letting owners heighten their roofs, which is visible along the Rue de Rivoli.
+
+So a facade seen in 1900 may have 1860 bones, an 1885 roof and an 1898
+shopfront. Give elements their own dates alongside the building's, and a street
+stops looking as though it went up in a single afternoon.
+
+### The feature families worth dating
+
+Paris-specific; each typology brings its own. If only five are modelled, these
+are the strongest dating instruments on a real facade.
+
+**Ironwork** — the best of them. Thin repeating lozenges and palmettes
+(1820s–40s) → dense symmetrical cast scrollwork, the standard haussmannian
+railing (1850s–80s) → looser Renaissance-revival variants (1880s–90s) →
+asymmetric organic whiplash (from c. 1895; Guimard's Castel Béranger 1895–98,
+the métro entrances 1900).
+
+**Socle treatment** — flat incised *refends* (1820s–50s) → raised *bossage*,
+heavy and regular (1850s–70s) → exaggerated picturesque rustication,
+vermiculated and rock-faced (1880s–90s).
+
+**Keystone sculpture** — plain (Restauration) → simple console or volute
+(Second Empire) → *mascaron* appearing sparingly, common from the 1870s,
+elaborate and near-universal by the 1890s. Figurative work, caryatids and
+atlantes follow the same curve on grand buildings.
+
+**Roof** — plain slate slope with small dormers → 45° comble with pedimented
+dormers (canonical 1853–84) → curved arc comble, taller and more elaborate,
+with varied dormer shapes and iron cresting (1884+). Zinc becomes the dominant
+Parisian roofing material mid-century.
+
+**Shopfront** — timber with small panes, pilasters and a painted fascia
+(1820s–50s) → cast-iron framing with larger panes (1850s+) → plate glass
+(1870s+) → elaborate carved devantures, mosaic stall risers, gilded lettering
+on glass (1890s+). Shopfronts turn over fastest, which makes them the best
+carrier of the observation-date idea.
+
+Secondary families worth having: **facing material** (render over rubble →
+*pierre de taille* on the percées → brick and *grès flammé* accents in the
+1890s); **window surrounds** (bare band → moulded architrave → pediments
+richening through the 1870s–80s → irregular heads in the 1890s); **cornices**
+(simple moulding → modillions and dentils → very deep and bracketed); and
+**composition itself** (strict block unity enforced from the 1855 circulaire,
+weakening after the 1880s into individualised facades, corner rotondes and
+domes).
+
+### Labels for talking, not for branching
+
+Restauration and Louis-Philippe (1820–48), Second Empire (1853–70), early Third
+Republic (1870–84), Belle Époque (1884–1900). Useful in documentation and in
+conversation. Not categories the code is allowed to test against.
+
+---
+
 ## More than one city
 
 The system should carry to other places and periods — New York brownstones,
